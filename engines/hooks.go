@@ -1,8 +1,8 @@
 package engines
 
 // Observability hooks. Cadence records nothing itself — the consuming
-// application installs these to feed its own metrics system (voiceapp wires
-// them to Prometheus; others may log or drop them). Defaults are no-ops so
+// application installs these to feed its own metrics system (Prometheus,
+// OpenTelemetry, plain logs — cadence does not care). Defaults are no-ops so
 // the engines never nil-check.
 var (
 	// OnTTSStreamEnd fires when a streaming TTS session finishes.

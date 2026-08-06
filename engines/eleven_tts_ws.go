@@ -30,9 +30,9 @@ import (
 //  3. The server sends `isFinal: true` after EVERY flushed segment, not
 //     just at session end. To distinguish a per-flush ack from a real
 //     session-close we only honour isFinal once we've sent EOS — the
-//     `eos_sent` flag pattern from fusion's reference impl.
+//     `eos_sent` flag pattern from the reference implementation.
 //
-// Translated from /Users/amen/Projects/Perso/fusion/fusion/src/providers/tts/elevenlabs.rs
+// Ported from the original Rust reference implementation.rs
 // (the canonical Phase-2 reference, 312 lines).
 //
 // Audio format: pcm_24000 (linear16 24 kHz). Wire-compatible with the
@@ -41,7 +41,7 @@ import (
 //
 // Request_id: ElevenLabs does NOT expose a per-stream correlation
 // handle on the WS handshake response or the initial server message
-// the way Deepgram does (verified against fusion's impl, which drops
+// the way Deepgram does (verified against the reference implementation, which drops
 // the response). ProviderRequestID() returns empty for this engine
 // for v1; the per-leg `provider_sessions.usage.provider_request_id`
 // JSONB will simply be unpopulated for ElevenLabs calls. If
@@ -160,7 +160,7 @@ func (e *elevenTTSWSEngine) Stream(
 
 	// eosSent gates the isFinal-as-session-end check. ElevenLabs sends
 	// isFinal after each flushed segment, so we ignore it until we've
-	// sent the EOS sentinel ourselves. See fusion elevenlabs.rs:222-226.
+	// sent the EOS sentinel ourselves.
 	var eosSent atomic.Bool
 
 	// Asymmetric cancel matching the Deepgram pattern: receiver always
@@ -200,7 +200,7 @@ func (e *elevenTTSWSEngine) Stream(
 // runSender forwards TextChunks as JSON messages over the WS until the
 // channel closes or the context is cancelled. The first chunk is bundled
 // with voice_settings as the BOS message; subsequent chunks are
-// `{"text": ..., "flush": true}` per fusion's reference. Tracks chars
+// `{"text": ..., "flush": true}` per the vendor protocol. Tracks chars
 // for cost attribution and sets eosSent before returning.
 func (e *elevenTTSWSEngine) runSender(
 	ctx context.Context,
@@ -288,7 +288,7 @@ func (e *elevenTTSWSEngine) sendEOS(conn *websocket.Conn) error {
 
 // runReceiver parses each JSON server message, decodes any base64
 // audio, and pushes it to audioCh. Honours session-final isFinal only
-// after eosSent is true (per fusion elevenlabs.rs:222-226).
+// after eosSent is true (matching the vendor protocol).
 func (e *elevenTTSWSEngine) runReceiver(
 	ctx context.Context,
 	conn *websocket.Conn,

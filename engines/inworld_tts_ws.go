@@ -245,7 +245,7 @@ func (i *inworldTTSWSEngine) runSender(
 // sendCreate opens the synthesis context with voice + model +
 // audio_config. autoMode lets Inworld decide when to flush its
 // server-side buffer for optimal latency vs. quality, matching how
-// fusion uses ElevenLabs's flush. Encoding "PCM" (no header) is the
+// The reference implementation uses ElevenLabs's flush. Encoding "PCM" (no header) is the
 // same choice as the HTTP engine.
 func (i *inworldTTSWSEngine) sendCreate(conn *websocket.Conn, contextID string) error {
 	msg := map[string]interface{}{

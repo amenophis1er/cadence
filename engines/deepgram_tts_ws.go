@@ -23,7 +23,6 @@ import (
 // frame logic processes the bytes identically.
 //
 // Translated from the Rust reference at
-// /Users/amen/Projects/Perso/fusion/fusion/src/providers/tts/deepgram.rs.
 // Differences worth knowing about:
 //   - Bidirectional cancel via shared sub-context: either goroutine's
 //     exit cancels the other, so a writer error doesn't leave a reader
@@ -173,7 +172,7 @@ func (d *deepgramTTSWSEngine) Stream(
 	// sender doesn't deadlock the wg.Wait. Sender only cancels on
 	// ERROR — on graceful end (textCh closed cleanly + Close sent), the
 	// receiver still has server-side audio in flight to drain, so we
-	// let it finish on its own. This matches fusion's reference
+	// let it finish on its own. This matches the reference
 	// pattern (deepgram.rs:146): "Only cancel on error — on success,
 	// let recv finish receiving audio." Without it, the success case
 	// races receiver against the cancel and drops late-arriving audio.

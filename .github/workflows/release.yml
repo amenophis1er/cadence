@@ -1,0 +1,26 @@
+name: Release
+
+# Tag vX.Y.Z → GitHub Release. The Go module "registry" needs nothing more:
+# proxy.golang.org and pkg.go.dev index public tags automatically on first
+# `go get`.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: test before release
+        run: go test -race -count=1 ./...
+      - name: create GitHub release
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

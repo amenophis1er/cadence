@@ -7,14 +7,14 @@ import (
 	"github.com/amenophis1er/cadence/audio"
 )
 
-// energyVAD is a stateful, RMS-based voice activity detector. It consumes
+// EnergyVAD is a stateful, RMS-based voice activity detector. It consumes
 // 20 ms frames of mu-law 8 kHz audio (160 bytes each) and reports whether
 // the user has just stopped speaking.
 //
 // The detector is intentionally simple — speech-vs-silence by short-time RMS
 // against a fixed threshold, with frame-count debouncing for both onset and
 // offset. Replace with Silero (CGo onnxruntime) when noise robustness matters.
-type energyVAD struct {
+type EnergyVAD struct {
 	speechRMS    float64 // RMS above which a frame is "speech"
 	onsetFrames  int     // consecutive speech frames to declare "speaking"
 	offsetFrames int     // consecutive silence frames to declare "stopped"
@@ -32,8 +32,8 @@ type energyVAD struct {
 	statSumRMS float64
 }
 
-func newEnergyVAD() *energyVAD {
-	return &energyVAD{
+func NewEnergyVAD() *EnergyVAD {
+	return &EnergyVAD{
 		// Tuned for telephony mu-law: typical room background ~100-300 RMS,
 		// telephone speech 1500-5000 RMS. 800 leaves comfortable margin.
 		speechRMS: 800,
@@ -52,8 +52,8 @@ func newEnergyVAD() *energyVAD {
 // observe ingests one mu-law frame and returns (speakingNow, justEnded).
 // "justEnded" fires exactly once per utterance, on the frame that crosses
 // the silence threshold after speech.
-func (v *energyVAD) observe(mu []byte) (speakingNow bool, justEnded bool) {
-	rms := mulawRMS(mu)
+func (v *EnergyVAD) Observe(mu []byte) (speakingNow bool, justEnded bool) {
+	rms := MuLawRMS(mu)
 
 	// Aggregate RMS for diagnostic logging once per second (50 × 20 ms).
 	v.statFrames++
@@ -104,13 +104,13 @@ func (v *energyVAD) observe(mu []byte) (speakingNow bool, justEnded bool) {
 }
 
 // reset clears all state, e.g. after committing a turn.
-func (v *energyVAD) reset() {
+func (v *EnergyVAD) Reset() {
 	v.speakingFrames = 0
 	v.silenceFrames = 0
 	v.speaking = false
 }
 
-func mulawRMS(mu []byte) float64 {
+func MuLawRMS(mu []byte) float64 {
 	if len(mu) == 0 {
 		return 0
 	}

@@ -9,43 +9,43 @@ import (
 	"github.com/amenophis1er/cadence/engines"
 )
 
-// sentenceBufferConfig tunes the LLM-to-TTS framing pipeline. Defaults match
-// the Rust fusion prototype: flush on hard sentence terminators, on clause
+// SentenceBufferConfig tunes the LLM-to-TTS framing pipeline. Defaults match
+// the original Rust prototype: flush on hard sentence terminators, on clause
 // boundaries once enough words have accumulated, on inactivity, or on a hard
 // word cap. The numbers trade first-token latency against TTS prosody.
-type sentenceBufferConfig struct {
-	clauseMinWords int           // flush at "," ";" ":" "—" only after this many words
-	maxWords       int           // hard cap regardless of punctuation
-	flushTimeout   time.Duration // flush after this much idle time since last delta
+type SentenceBufferConfig struct {
+	ClauseMinWords int           // flush at "," ";" ":" "—" only after this many words
+	MaxWords       int           // hard cap regardless of punctuation
+	FlushTimeout   time.Duration // flush after this much idle time since last delta
 }
 
-func defaultSentenceBufferConfig() sentenceBufferConfig {
-	return sentenceBufferConfig{
-		clauseMinWords: 15,
-		maxWords:       40,
-		flushTimeout:   300 * time.Millisecond,
+func DefaultSentenceBufferConfig() SentenceBufferConfig {
+	return SentenceBufferConfig{
+		ClauseMinWords: 15,
+		MaxWords:       40,
+		FlushTimeout:   300 * time.Millisecond,
 	}
 }
 
-// sentenceBufferResult is what runSentenceBuffer hands back when the upstream
+// SentenceBufferResult is what RunSentenceBuffer hands back when the upstream
 // LLM event channel closes.
-type sentenceBufferResult struct {
-	fullText  string
-	toolCalls []engines.ToolCall
+type SentenceBufferResult struct {
+	FullText  string
+	ToolCalls []engines.ToolCall
 }
 
-// runSentenceBuffer consumes a stream of LLMEvents (text deltas + tool calls)
+// RunSentenceBuffer consumes a stream of LLMEvents (text deltas + tool calls)
 // and emits sentence-aligned text chunks downstream so TTS can begin
 // synthesising before the LLM has finished generating. Returns once `in`
 // closes or `ctx` cancels.
 //
 // `out` is closed before return so the consuming TTS goroutine unblocks.
-func runSentenceBuffer(
+func RunSentenceBuffer(
 	ctx context.Context,
-	cfg sentenceBufferConfig,
+	cfg SentenceBufferConfig,
 	in <-chan engines.LLMEvent,
 	out chan<- string,
-) sentenceBufferResult {
+) SentenceBufferResult {
 	defer close(out)
 
 	var fullText strings.Builder
@@ -53,7 +53,7 @@ func runSentenceBuffer(
 	var pending strings.Builder
 	pendingWords := 0
 
-	timer := time.NewTimer(cfg.flushTimeout)
+	timer := time.NewTimer(cfg.FlushTimeout)
 	timer.Stop()
 	timerArmed := false
 
@@ -98,18 +98,18 @@ func runSentenceBuffer(
 	for {
 		select {
 		case <-ctx.Done():
-			return sentenceBufferResult{fullText: fullText.String(), toolCalls: toolCalls}
+			return SentenceBufferResult{FullText: fullText.String(), ToolCalls: toolCalls}
 
 		case <-timer.C:
 			timerArmed = false
 			if !flush() {
-				return sentenceBufferResult{fullText: fullText.String(), toolCalls: toolCalls}
+				return SentenceBufferResult{FullText: fullText.String(), ToolCalls: toolCalls}
 			}
 
 		case ev, ok := <-in:
 			if !ok {
 				_ = flush()
-				return sentenceBufferResult{fullText: fullText.String(), toolCalls: toolCalls}
+				return SentenceBufferResult{FullText: fullText.String(), ToolCalls: toolCalls}
 			}
 
 			switch ev.Type {
@@ -127,17 +127,17 @@ func runSentenceBuffer(
 				flushed := false
 				if hasSentenceTerminator(ev.TextDelta) {
 					if !flush() {
-						return sentenceBufferResult{fullText: fullText.String(), toolCalls: toolCalls}
+						return SentenceBufferResult{FullText: fullText.String(), ToolCalls: toolCalls}
 					}
 					flushed = true
-				} else if pendingWords >= cfg.maxWords {
+				} else if pendingWords >= cfg.MaxWords {
 					if !flush() {
-						return sentenceBufferResult{fullText: fullText.String(), toolCalls: toolCalls}
+						return SentenceBufferResult{FullText: fullText.String(), ToolCalls: toolCalls}
 					}
 					flushed = true
-				} else if pendingWords >= cfg.clauseMinWords && hasClauseBoundary(ev.TextDelta) {
+				} else if pendingWords >= cfg.ClauseMinWords && hasClauseBoundary(ev.TextDelta) {
 					if !flush() {
-						return sentenceBufferResult{fullText: fullText.String(), toolCalls: toolCalls}
+						return SentenceBufferResult{FullText: fullText.String(), ToolCalls: toolCalls}
 					}
 					flushed = true
 				}
@@ -151,7 +151,7 @@ func runSentenceBuffer(
 							}
 						}
 					}
-					timer.Reset(cfg.flushTimeout)
+					timer.Reset(cfg.FlushTimeout)
 					timerArmed = true
 				}
 			}
@@ -166,7 +166,7 @@ func hasSentenceTerminator(s string) bool {
 }
 
 // hasClauseBoundary reports whether the delta contains "," ";" ":" "—" — soft
-// breaks we'll flush at only after clauseMinWords have accumulated.
+// breaks we'll flush at only after ClauseMinWords have accumulated.
 func hasClauseBoundary(s string) bool {
 	return strings.ContainsAny(s, ",;:—")
 }

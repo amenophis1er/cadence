@@ -152,7 +152,7 @@ type AudioChunk struct {
 
 // StreamingTTSEngine owns a WebSocket (or other long-lived transport)
 // for the duration of one Stream() call, mirroring the channel-based
-// design of the related Rust project (fusion). Compared to the
+// design of the original Rust prototype. Compared to the
 // HTTP-shaped TTSEngine.Synthesize, this lets the engine:
 //
 //   - hold a warm connection across multiple sentences, avoiding

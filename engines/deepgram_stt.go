@@ -25,7 +25,7 @@ import (
 // We deliberately do NOT enable `vad_events` / `utterance_end_ms`: those
 // were observed to fire 0 events on telephony streams across multi-turn
 // calls, leaving accumulated is_final segments uncommitted until hangup.
-// Plain endpointing matches the fusion reference and is reliable on mu-law.
+// Plain endpointing is reliable on mu-law.
 type DeepgramSTTConfig struct {
 	URL      string // base ws/wss URL — defaults to wss://api.deepgram.com
 	APIKey   string // Deepgram API key (Token-prefixed Authorization header)

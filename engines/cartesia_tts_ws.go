@@ -36,7 +36,7 @@ import (
 //  6. Auth header is `X-API-Key` (NOT `Authorization: Bearer ...`,
 //     unlike the HTTP path).
 //
-// Translated from /Users/amen/Projects/Perso/fusion/fusion/src/providers/tts/cartesia.rs.
+// Ported from the original Rust reference implementation.
 //
 // Audio format: pcm_s16le 24 kHz, wire-compatible with the HTTP engine
 // and the mediator's downstream pipeline.
