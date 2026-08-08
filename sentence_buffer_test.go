@@ -82,6 +82,52 @@ func TestIdleTimeoutFlushes(t *testing.T) {
 	close(in)
 }
 
+func TestCancelReturnsPartialResult(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	in := make(chan engines.LLMEvent)
+	out := make(chan string, 4)
+	done := make(chan SentenceBufferResult, 1)
+	go func() { done <- RunSentenceBuffer(ctx, DefaultSentenceBufferConfig(), in, out) }()
+	in <- engines.LLMEvent{Type: "text", TextDelta: "partial answer"}
+	cancel()
+	select {
+	case res := <-done:
+		if res.FullText != "partial answer" {
+			t.Fatalf("full text after cancel = %q", res.FullText)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancel did not unblock RunSentenceBuffer")
+	}
+}
+
+func TestCancelUnblocksStalledFlush(t *testing.T) {
+	// Unbuffered out with no reader: a terminator-triggered flush blocks on
+	// the send. Cancelling ctx must still let the buffer return.
+	ctx, cancel := context.WithCancel(context.Background())
+	in := make(chan engines.LLMEvent, 1)
+	out := make(chan string) // no reader
+	done := make(chan SentenceBufferResult, 1)
+	go func() { done <- RunSentenceBuffer(ctx, DefaultSentenceBufferConfig(), in, out) }()
+	in <- engines.LLMEvent{Type: "text", TextDelta: "Stuck sentence."}
+	time.Sleep(20 * time.Millisecond) // let the flush reach the blocked send
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancel did not unblock a flush stalled on out")
+	}
+}
+
+func TestEmptyAndWhitespaceDeltasProduceNoChunks(t *testing.T) {
+	chunks, res := collect(t, DefaultSentenceBufferConfig(), []string{"", "   ", "\n"})
+	if len(chunks) != 0 {
+		t.Fatalf("whitespace-only input must emit no chunks, got %q", chunks)
+	}
+	if res.FullText != "   \n" {
+		t.Fatalf("full text should keep raw whitespace deltas, got %q", res.FullText)
+	}
+}
+
 func TestToolCallsSurviveToResult(t *testing.T) {
 	in := make(chan engines.LLMEvent)
 	out := make(chan string, 4)
