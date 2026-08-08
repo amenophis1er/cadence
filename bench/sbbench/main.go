@@ -38,14 +38,14 @@ type cfgVariant struct {
 }
 
 type runResult struct {
-	Style        string  `json:"style"`
-	TokRate      int     `json:"tok_per_s"`
-	Config       string  `json:"config"`
-	TTFCms       float64 `json:"ttfc_ms"`        // time to first chunk
-	Chunks       int     `json:"chunks"`
-	MeanWords    float64 `json:"mean_words"`
-	MinWords     int     `json:"min_words"`
-	TotalMs      float64 `json:"total_ms"`
+	Style     string  `json:"style"`
+	TokRate   int     `json:"tok_per_s"`
+	Config    string  `json:"config"`
+	TTFCms    float64 `json:"ttfc_ms"` // time to first chunk
+	Chunks    int     `json:"chunks"`
+	MeanWords float64 `json:"mean_words"`
+	MinWords  int     `json:"min_words"`
+	TotalMs   float64 `json:"total_ms"`
 }
 
 func words(s string) int { return len(strings.Fields(s)) }

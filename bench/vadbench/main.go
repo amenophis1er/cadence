@@ -3,10 +3,14 @@
 // Synthesizes mu-law 8 kHz "speech" as syllabic energy bursts (60–180 ms
 // voiced, RMS 1500–5000) separated by articulation micro-gaps (20–80 ms,
 // RMS 100–400), matching the RMS bands documented in vad.go. Each trial:
-//   utterance A (1.5–3 s) — hesitation pause P — utterance B (1–2 s) — end.
+//
+//	utterance A (1.5–3 s) — hesitation pause P — utterance B (1–2 s) — end.
+//
 // Sweeps the offset (silence-to-commit) threshold and measures:
-//   cut rate: how often the VAD commits during the hesitation (false turn end)
-//   commit latency: time from true speech end to justEnded (turn-commit delay)
+//
+//	cut rate: how often the VAD commits during the hesitation (false turn end)
+//	commit latency: time from true speech end to justEnded (turn-commit delay)
+//
 // The sweep uses a faithful parameterized copy of the EnergyVAD state machine
 // (fields are private upstream); the shipped NewEnergyVAD() is run on the
 // same trials as a cross-check at its 300 ms default.
@@ -102,10 +106,10 @@ func (v *vad) observe(mu []byte) (bool, bool) {
 // ---- trial ---------------------------------------------------------------
 
 type trial struct {
-	frames        [][]byte
-	hesitStart    int // frame index where hesitation begins
-	hesitEnd      int
-	trueEndFrame  int // last speech frame of utterance B
+	frames       [][]byte
+	hesitStart   int // frame index where hesitation begins
+	hesitEnd     int
+	trueEndFrame int // last speech frame of utterance B
 }
 
 func makeTrial(rng *rand.Rand, pauseMs int) trial {
@@ -156,12 +160,12 @@ func main() {
 	offsets := []int{200, 300, 400, 500, 600} // ms
 
 	type row struct {
-		OffsetMs   int     `json:"offset_ms"`
-		PauseMs    int     `json:"pause_ms"`
-		CutRate    float64 `json:"cut_rate"`
-		MedCommit  float64 `json:"med_commit_ms"`
-		P95Commit  float64 `json:"p95_commit_ms"`
-		Shipped    bool    `json:"shipped_impl"`
+		OffsetMs  int     `json:"offset_ms"`
+		PauseMs   int     `json:"pause_ms"`
+		CutRate   float64 `json:"cut_rate"`
+		MedCommit float64 `json:"med_commit_ms"`
+		P95Commit float64 `json:"p95_commit_ms"`
+		Shipped   bool    `json:"shipped_impl"`
 	}
 	var rows []row
 

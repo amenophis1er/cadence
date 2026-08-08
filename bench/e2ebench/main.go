@@ -12,6 +12,7 @@
 // N repetitions per prompt style; JSON out with per-stage medians.
 //
 // Env:
+//
 //	LLM_PROVIDER   openai | anthropic          (default openai)
 //	OPENAI_URL     default https://api.openai.com/v1/chat/completions
 //	OPENAI_API_KEY / OPENAI_MODEL (default gpt-4o-mini)
@@ -40,15 +41,15 @@ var prompts = map[string]string{
 }
 
 type stage struct {
-	Style        string  `json:"style"`
-	Rep          int     `json:"rep"`
-	TTFDeltaMs   float64 `json:"llm_first_delta_ms"`
-	TTFFlushMs   float64 `json:"first_flush_ms"`
-	TTFAudioMs   float64 `json:"first_audio_ms"`
-	LLMTotalMs   float64 `json:"llm_total_ms"`
-	DeltaCount   int     `json:"delta_count"`
-	FlushCount   int     `json:"flush_count"`
-	Err          string  `json:"err,omitempty"`
+	Style      string  `json:"style"`
+	Rep        int     `json:"rep"`
+	TTFDeltaMs float64 `json:"llm_first_delta_ms"`
+	TTFFlushMs float64 `json:"first_flush_ms"`
+	TTFAudioMs float64 `json:"first_audio_ms"`
+	LLMTotalMs float64 `json:"llm_total_ms"`
+	DeltaCount int     `json:"delta_count"`
+	FlushCount int     `json:"flush_count"`
+	Err        string  `json:"err,omitempty"`
 }
 
 func env(k, def string) string {
