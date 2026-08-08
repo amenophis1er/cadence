@@ -4,10 +4,36 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/amenophis1er/cadence.svg)](https://pkg.go.dev/github.com/amenophis1er/cadence)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Provider-agnostic voice AI engines for Go.** Streaming STT, TTS and LLM
-behind small uniform interfaces, so your voice application never knows —
-or cares — which vendor is talking. Swap providers with a config change,
-run several side by side, or plug in your own in-house engine.
+**A provider-agnostic Go engine for low-latency STT→LLM→TTS voice
+pipelines.** Streaming engines behind small uniform interfaces, so your
+voice application never knows — or cares — which vendor is talking. Swap
+providers with a config change, run several side by side, or plug in your
+own in-house engine.
+
+cadence owns the **hot path** — the latency-critical loop between a
+committed user turn and the first synthesized audio — and deliberately
+nothing else:
+
+```
+             your voice application
+        tools · prompts · business logic
+                     │
+                     ▼
+         ╔═══════════════════════╗
+         ║        cadence        ║
+ audio → ║  endpoint → STT → LLM ║
+         ║               ↓       ║
+ audio ← ║      TTS ← buffer     ║
+         ╚═══════════════════════╝
+                     │
+               instrumentation
+```
+
+**What cadence is not:** a transport (bring your own telephony or WebRTC —
+[xphone](https://github.com/x-phone/xphone-go) if you want a phone line in
+Go), an agent framework (turn policy, tools and state stay in your
+application), or a deployment platform. Small, embeddable, instrumented —
+the engine underneath a voice agent, not the agent.
 
 Battle-tested in a production telephony platform handling real call traffic.
 
@@ -131,6 +157,21 @@ if ur, ok := llm.(engines.UsageReporter); ok {
 - **Observability hooks** — cadence records nothing itself; install
   `engines.OnTTSStreamEnd` (and friends as they grow) to feed Prometheus,
   OpenTelemetry, or plain logs.
+
+## Measured, not claimed
+
+The hot path is characterized, not guessed at:
+["The anatomy of time-to-first-audio in a voice agent"](https://amenophis.dev/writing/anatomy-of-first-audio/)
+decomposes a live LLM→buffer→TTS chain (median post-commit first audio
+1.06 s: ~59 % LLM, ~28 % TTS, ~14 % cadence's buffering) and sweeps the
+sentence-buffer and VAD trade-offs. The harnesses live in
+[`bench/`](bench/) — reproduce the numbers before trusting them:
+
+| Harness | Measures | Needs |
+|---|---|---|
+| [`bench/sbbench`](bench/sbbench/) | sentence-buffer time-to-first-chunk vs word rate × config | nothing |
+| [`bench/vadbench`](bench/vadbench/) | VAD hesitation-cut rate + commit latency vs offset | nothing |
+| [`bench/e2ebench`](bench/e2ebench/) | live LLM → buffer → TTS stage decomposition | provider keys |
 
 ## Design notes
 
