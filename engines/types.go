@@ -50,9 +50,15 @@ type LLMEvent struct {
 	// ToolCalls is the finalized list of tool calls, sent once when the model
 	// finishes a tool-using turn. Empty unless Type == "tool_calls".
 	ToolCalls []ToolCall
-	// Type is one of: "text", "tool_calls", "done".
+	// Type is one of: "text", "tool_calls", "done". Every Stream ends
+	// with a "done" event — including on request failure or context
+	// cancellation (best-effort: dropped rather than blocking if the
+	// consumer has stopped draining). Stream's error return remains the
+	// authoritative failure signal.
 	Type string
-	// FinishReason is set on "done" events ("stop", "tool_calls", "length", ...).
+	// FinishReason is set on "done" events: vendor reasons on success
+	// ("stop", "tool_calls", "length", ...), "cancelled" when the
+	// context was cancelled, "error" on any other failure.
 	FinishReason string
 }
 
