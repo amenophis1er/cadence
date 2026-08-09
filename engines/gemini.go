@@ -352,9 +352,11 @@ func parseGeminiSSE(ctx context.Context, body io.Reader, out chan<- LLMEvent) (U
 				}
 				calls = append(calls, ToolCall{
 					// Gemini doesn't supply an id; synthesise one
-					// from the name so the supervisor can correlate
-					// the eventual tool_result back to this call.
-					ID:        "gemini_" + part.FunctionCall.Name,
+					// from the name plus the call's index in this
+					// turn so the supervisor can correlate the
+					// eventual tool_result back to this call even
+					// when the model calls the same function twice.
+					ID:        fmt.Sprintf("gemini_%s_%d", part.FunctionCall.Name, len(calls)),
 					Name:      part.FunctionCall.Name,
 					Arguments: string(args),
 				})

@@ -82,9 +82,9 @@ func TestGeminiStream_HappyPath(t *testing.T) {
 }
 
 // TestGeminiStream_FunctionCalls verifies functionCall parts: args
-// re-marshalled to a JSON string, the synthesized "gemini_<name>" id
-// (Gemini supplies none), batching into one tool_calls event, and the
-// tools[0].functionDeclarations request envelope.
+// re-marshalled to a JSON string, the synthesized "gemini_<name>_<idx>"
+// id (Gemini supplies none), batching into one tool_calls event, and
+// the tools[0].functionDeclarations request envelope.
 func TestGeminiStream_FunctionCalls(t *testing.T) {
 	reqCh := make(chan capturedLLMRequest, 1)
 	sse := strings.Join([]string{
@@ -115,15 +115,33 @@ func TestGeminiStream_FunctionCalls(t *testing.T) {
 	}
 	// encoding/json sorts map keys, so the re-marshalled args string is
 	// deterministic.
-	if tc.ToolCalls[0].ID != "gemini_get_weather" || tc.ToolCalls[0].Name != "get_weather" ||
+	if tc.ToolCalls[0].ID != "gemini_get_weather_0" || tc.ToolCalls[0].Name != "get_weather" ||
 		tc.ToolCalls[0].Arguments != `{"city":"Paris","units":"c"}` {
 		t.Errorf("call[0] = %+v", tc.ToolCalls[0])
 	}
-	if tc.ToolCalls[1].ID != "gemini_get_time" || tc.ToolCalls[1].Arguments != "{}" {
+	if tc.ToolCalls[1].ID != "gemini_get_time_1" || tc.ToolCalls[1].Arguments != "{}" {
 		t.Errorf("call[1] = %+v", tc.ToolCalls[1])
 	}
 	if done := findEvent(events, "done"); done == nil || done.FinishReason != "STOP" {
 		t.Errorf("done = %+v, want FinishReason STOP", done)
+	}
+
+	// Same function called twice in one turn must still get distinct
+	// IDs, or tool_result correlation breaks downstream.
+	srv2 := httptest.NewServer(sseHandler(make(chan capturedLLMRequest, 1),
+		`data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"ping","args":{}}},{"functionCall":{"name":"ping","args":{}}}]},"finishReason":"STOP"}]}`+"\n\n"))
+	defer srv2.Close()
+	eng2 := NewGemini(GeminiConfig{URL: srv2.URL, APIKey: "k", Model: "gemini-2.5-flash"})
+	events2, err := runLLMStream(t, context.Background(), eng2, []LLMMessage{{Role: "user", Content: "go"}}, nil)
+	if err != nil {
+		t.Fatalf("Stream error: %v", err)
+	}
+	tc2 := findEvent(events2, "tool_calls")
+	if tc2 == nil || len(tc2.ToolCalls) != 2 {
+		t.Fatalf("duplicate-call event = %+v, want 2 tool calls", tc2)
+	}
+	if tc2.ToolCalls[0].ID == tc2.ToolCalls[1].ID {
+		t.Errorf("duplicate function calls share ID %q", tc2.ToolCalls[0].ID)
 	}
 
 	// tools serialization: single tools envelope wrapping functionDeclarations.
