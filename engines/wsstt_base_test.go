@@ -177,13 +177,113 @@ func TestWSSTTSession_PushAudioOnZeroValueSession(t *testing.T) {
 	}
 }
 
-func TestWSSTTSession_UsageAccumulates(t *testing.T) {
-	var s wsSTTSession
+// waitForwarded polls until the writer has forwarded want frames.
+func waitForwarded(t *testing.T, s *wsSTTSession, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.framesForwarded.Load() >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("framesForwarded = %d, want >= %d", s.framesForwarded.Load(), want)
+}
+
+func TestWSSTTSession_UsageCountsOnlyForwardedAudio(t *testing.T) {
+	// usage tracks audio actually delivered to the vendor — what the
+	// vendor could bill — not every frame offered to pushAudio.
+	wsURL, _, cleanup := mockSTTWSServer(t, func(ws *websocket.Conn) {
+		for {
+			if _, _, err := ws.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	defer cleanup()
+
+	s := &wsSTTSession{name: "test-stt"}
+	conn, err := dialSTT(context.Background(), wsURL, nil, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	events := make(chan STTEvent, 8)
+	if err := s.start(context.Background(), conn, events, blockingReader); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
 	// mu-law 8 kHz: 8000 bytes == 1 second.
 	s.pushAudio(make([]byte, 8000))
 	s.pushAudio(make([]byte, 4000))
+	waitForwarded(t, s, 2)
 	if got := s.usage().AudioSeconds; got != 1.5 {
 		t.Errorf("AudioSeconds = %v, want 1.5", got)
+	}
+
+	// Post-stop pushes are never forwarded and must not accrue.
+	if err := s.stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	s.pushAudio(make([]byte, 8000))
+	if got := s.usage().AudioSeconds; got != 1.5 {
+		t.Errorf("AudioSeconds after post-stop push = %v, want 1.5", got)
+	}
+	drainUntilClosed(t, events, 2*time.Second)
+}
+
+func TestWSSTTSession_UsageIgnoresDroppedFrames(t *testing.T) {
+	// Never started: every push drops, so no audio time accrues.
+	var s wsSTTSession
+	s.pushAudio(make([]byte, 8000))
+	s.pushAudio(make([]byte, 4000))
+	if got := s.usage().AudioSeconds; got != 0 {
+		t.Errorf("AudioSeconds for dropped-only frames = %v, want 0", got)
+	}
+}
+
+func TestWSSTTSession_CtxCancelUnblocksReader(t *testing.T) {
+	// Cancelling ctx alone — no Stop call, server keeps the conn open —
+	// must close the conn so a reader parked in ReadMessage unblocks
+	// and the events channel closes, with no STTError (graceful path).
+	wsURL, _, cleanup := mockSTTWSServer(t, func(ws *websocket.Conn) {
+		for {
+			if _, _, err := ws.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := &wsSTTSession{name: "test-stt"}
+	conn, err := dialSTT(ctx, wsURL, nil, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	events := make(chan STTEvent, 8)
+	reader := func(ctx context.Context, conn *websocket.Conn, events chan<- STTEvent, stopCh <-chan struct{}) {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				if !readErrorIsExpected(ctx, stopCh) {
+					emitSTT(events, STTEvent{Type: STTError, Err: err})
+				}
+				return
+			}
+		}
+	}
+	if err := s.start(ctx, conn, events, reader); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	cancel()
+	for _, ev := range drainUntilClosed(t, events, 2*time.Second) {
+		if ev.Type == STTError {
+			t.Errorf("STTError on ctx cancel: %v", ev.Err)
+		}
+	}
+	if err := s.stop(); err != nil {
+		t.Fatalf("stop after cancel: %v", err)
 	}
 }
 

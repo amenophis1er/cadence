@@ -49,8 +49,11 @@ type wsSTTSession struct {
 	stopCh  chan struct{}
 	wg      sync.WaitGroup
 
-	// audioSeconds accumulates the duration of audio pushed via pushAudio,
-	// for cost attribution. Assumes mu-law 8 kHz (the documented contract
+	// audioSeconds accumulates the duration of audio actually forwarded to
+	// the vendor (accrued by runWriter after a successful write), for cost
+	// attribution. Frames dropped on overrun or pushed after Stop are NOT
+	// counted — usage tracks what the vendor could have billed, not what
+	// the caller offered. Assumes mu-law 8 kHz (the documented contract
 	// for Streaming STT engines, see PushAudio doc on StreamingSTTEngine).
 	audioSeconds float64
 
@@ -99,6 +102,27 @@ func (s *wsSTTSession) start(ctx context.Context, conn *websocket.Conn, events c
 		reader(ctx, conn, events, s.stopCh)
 	}()
 	go s.runWriter(ctx)
+
+	// Watch for context cancellation and close the conn so the reader's
+	// blocked ReadMessage unblocks immediately. Without this, cancelling
+	// ctx only stopped the writer — the reader stayed parked until the
+	// peer closed the socket or Stop was called, so "barge-in is context
+	// cancellation" didn't hold for STT. readErrorIsExpected sees the
+	// cancelled ctx, so teardown stays graceful (no STTError emitted).
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		select {
+		case <-ctx.Done():
+			s.mu.Lock()
+			conn := s.conn
+			s.mu.Unlock()
+			if conn != nil {
+				_ = conn.Close()
+			}
+		case <-s.stopCh:
+		}
+	}()
 	return nil
 }
 
@@ -155,9 +179,6 @@ func (s *wsSTTSession) writeMessage(messageType int, data []byte) error {
 // pushAudio enqueues one audio frame for forwarding. Drops on overrun
 // rather than blocking, preserving real-time behaviour over completeness.
 func (s *wsSTTSession) pushAudio(frame []byte) {
-	s.mu.Lock()
-	s.audioSeconds += float64(len(frame)) / 8000
-	s.mu.Unlock()
 	s.framesReceived.Add(1)
 	select {
 	case s.audioIn <- frame:
@@ -166,7 +187,7 @@ func (s *wsSTTSession) pushAudio(frame []byte) {
 	}
 }
 
-// usage returns cumulative audio time pushed through this session.
+// usage returns cumulative audio time forwarded to the vendor.
 func (s *wsSTTSession) usage() Usage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -225,6 +246,9 @@ func (s *wsSTTSession) runWriter(ctx context.Context) {
 				return
 			}
 			s.framesForwarded.Add(1)
+			s.mu.Lock()
+			s.audioSeconds += float64(len(frame)) / 8000
+			s.mu.Unlock()
 			firstFrameOnce.Do(func() {
 				slog.Info("cadence: STT writer forwarded first audio frame",
 					"engine", s.name,
