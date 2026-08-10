@@ -43,11 +43,21 @@ type deepgramTTSWSEngine struct {
 	connMu sync.Mutex
 	conn   *websocket.Conn
 
-	// discarding is raised by Clear and lowered when the server's Cleared
-	// confirmation arrives. While raised, the receiver drops audio frames:
-	// those were synthesised before the interruption, so playing them is
-	// exactly the stale-speech artefact barge-in exists to prevent.
-	discarding atomic.Bool
+	// clearsPending counts Clear requests written but not yet acknowledged
+	// by a server Cleared. While > 0, the receiver drops audio frames:
+	// those were synthesised before an interruption, so playing them is
+	// exactly the stale-speech artefact barge-in exists to prevent. A
+	// counter, not a bool — two rapid barge-ins mean two pending Clears,
+	// and the FIRST ack must not lower the gate while the second is still
+	// outstanding.
+	clearsPending atomic.Int64
+
+	// clearSig is closed by Clear (and replaced with a fresh channel) to
+	// abort a receiver blocked forwarding a frame into a full audioCh —
+	// without it, a frame that passed the gate before Clear would still be
+	// delivered whenever the consumer next drains, after Clear returned.
+	// Guarded by connMu; non-nil only while a Stream is live.
+	clearSig chan struct{}
 
 	// providerRequestID holds the captured dg-request-id. Read from
 	// multiple goroutines (engine, mediator's RecordLegSessions);
@@ -173,12 +183,14 @@ func (d *deepgramTTSWSEngine) Stream(
 	// closed socket.
 	d.connMu.Lock()
 	d.conn = conn
+	d.clearSig = make(chan struct{})
 	d.connMu.Unlock()
 	defer func() {
 		d.connMu.Lock()
 		d.conn = nil
+		d.clearSig = nil
 		d.connMu.Unlock()
-		d.discarding.Store(false)
+		d.clearsPending.Store(0)
 	}()
 
 	// Capture dg-request-id from the handshake response BEFORE we drop resp.
@@ -327,12 +339,18 @@ func (d *deepgramTTSWSEngine) Clear() error {
 	}
 	// Raise the gate BEFORE the wire write, so audio arriving between the
 	// write and the server's acknowledgement is already being dropped.
-	d.discarding.Store(true)
+	d.clearsPending.Add(1)
+	// Abort a receiver blocked mid-forward into a full audioCh: that frame
+	// passed the gate before this Clear, and delivering it whenever the
+	// consumer next drains would be post-Clear stale speech.
+	close(d.clearSig)
+	d.clearSig = make(chan struct{})
 	err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"Clear"}`))
 	d.connMu.Unlock()
 	if err != nil {
-		// The gate would otherwise stay raised forever and mute the stream.
-		d.discarding.Store(false)
+		// No Cleared will ever answer this request; without the rollback
+		// the gate would stay raised forever and mute the stream.
+		d.clearsPending.Add(-1)
 		return fmt.Errorf("ws send Clear: %w", err)
 	}
 	return nil
@@ -374,10 +392,17 @@ func (d *deepgramTTSWSEngine) runReceiver(
 			if len(data) == 0 {
 				continue
 			}
+			// Capture this frame's abort signal BEFORE the gate check:
+			// a Clear that lands after the capture closes exactly this
+			// channel, so the frame is either dropped by the gate below
+			// or aborted out of the send — never delivered stale.
+			d.connMu.Lock()
+			sig := d.clearSig
+			d.connMu.Unlock()
 			// Synthesised before an interruption — dropping it here is
 			// what spares every consumer from tracking the vendor's
 			// in-flight boundary itself.
-			if d.discarding.Load() {
+			if d.clearsPending.Load() > 0 {
 				continue
 			}
 			// Copy the slice — gorilla reuses its read buffer between
@@ -387,6 +412,9 @@ func (d *deepgramTTSWSEngine) runReceiver(
 			copy(out, data)
 			select {
 			case audioCh <- AudioChunk{Data: out}:
+			case <-sig:
+				// A Clear landed while this frame was blocked waiting
+				// for room in audioCh — it predates the interruption.
 			case <-ctx.Done():
 				return nil
 			}
@@ -406,9 +434,13 @@ func (d *deepgramTTSWSEngine) runReceiver(
 			}
 			switch env.Type {
 			case "Cleared":
-				// Everything queued before the Clear has now been
-				// accounted for; resume forwarding audio.
-				d.discarding.Store(false)
+				// One outstanding Clear is now fully accounted for.
+				// Resume forwarding only when no OTHER Clear is still
+				// pending — a rapid double barge-in must keep the gate
+				// up until the last ack.
+				if d.clearsPending.Load() > 0 {
+					d.clearsPending.Add(-1)
+				}
 			case "Warning":
 				warn := env.WarnMsg
 				if warn == "" {

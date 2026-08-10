@@ -125,6 +125,165 @@ func TestDeepgramTTSWS_ClearDropsStaleAudioAndKeepsSession(t *testing.T) {
 	}
 }
 
+// Two rapid barge-ins mean two outstanding Clears. The FIRST Cleared ack
+// must not lower the discard gate while the second is still pending —
+// audio arriving between the two acks predates an interruption.
+func TestDeepgramTTSWS_DoubleClearKeepsGateUntilLastAck(t *testing.T) {
+	sawBothClears := make(chan struct{})
+
+	wsURL, cleanup := mockDeepgramTTSServer(t, "", func(t *testing.T, ws *websocket.Conn) {
+		clears := 0
+		for {
+			_, data, err := ws.ReadMessage()
+			if err != nil {
+				return
+			}
+			var env struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(data, &env) != nil {
+				continue
+			}
+			switch env.Type {
+			case "Speak":
+				// Lets the test observe that the session is live before
+				// it fires the barge-ins (Clear pre-connect is a no-op).
+				ws.WriteMessage(websocket.BinaryMessage, []byte("warmup"))
+			case "Clear":
+				clears++
+				if clears == 2 {
+					// Ack the first Clear, then emit audio that belongs
+					// to the window before the SECOND Clear's ack, then
+					// ack the second and emit genuinely fresh audio.
+					ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"Cleared"}`))
+					ws.WriteMessage(websocket.BinaryMessage, []byte("stale-between-acks"))
+					ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"Cleared"}`))
+					ws.WriteMessage(websocket.BinaryMessage, []byte("fresh"))
+					close(sawBothClears)
+				}
+			case "Close":
+				_ = ws.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "done"))
+				return
+			}
+		}
+	})
+	defer cleanup()
+
+	eng := newTestEngine(wsURL)
+	textCh := make(chan TextChunk, 4)
+	audioCh := make(chan AudioChunk, 16)
+	done := make(chan error, 1)
+	go func() { done <- eng.Stream(context.Background(), textCh, audioCh) }()
+
+	// First chunk triggers the lazy connect; wait for the warmup frame so
+	// the connection is provably live before barging in.
+	textCh <- TextChunk{Text: "hello", IsSentenceEnd: true}
+	select {
+	case <-audioCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("session never came up")
+	}
+
+	if err := eng.Clear(); err != nil {
+		t.Fatalf("first Clear: %v", err)
+	}
+	if err := eng.Clear(); err != nil {
+		t.Fatalf("second Clear: %v", err)
+	}
+	select {
+	case <-sawBothClears:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server never saw both Clear messages")
+	}
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case chunk := <-audioCh:
+			if string(chunk.Data) == "stale-between-acks" {
+				t.Fatal("audio from between the two Cleared acks reached the consumer")
+			}
+			if string(chunk.Data) == "fresh" {
+				close(textCh)
+				<-done
+				return
+			}
+		case <-deadline:
+			t.Fatal("post-ack audio never arrived — gate stuck raised")
+		}
+	}
+}
+
+// A frame that passed the discard gate but is blocked waiting for room in a
+// full audioCh predates any Clear that lands meanwhile — it must be aborted,
+// not delivered whenever the consumer next drains.
+func TestDeepgramTTSWS_ClearAbortsBlockedForward(t *testing.T) {
+	sawClear := make(chan struct{})
+
+	wsURL, cleanup := mockDeepgramTTSServer(t, "", func(t *testing.T, ws *websocket.Conn) {
+		// Emit the stale frame immediately; the consumer isn't draining,
+		// so the engine's forward will block on the unbuffered channel.
+		ws.WriteMessage(websocket.BinaryMessage, []byte("stale-blocked"))
+		for {
+			_, data, err := ws.ReadMessage()
+			if err != nil {
+				return
+			}
+			var env struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(data, &env) != nil {
+				continue
+			}
+			switch env.Type {
+			case "Clear":
+				ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"Cleared"}`))
+				ws.WriteMessage(websocket.BinaryMessage, []byte("fresh"))
+				close(sawClear)
+			case "Close":
+				_ = ws.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "done"))
+				return
+			}
+		}
+	})
+	defer cleanup()
+
+	eng := newTestEngine(wsURL)
+	textCh := make(chan TextChunk, 4)
+	audioCh := make(chan AudioChunk) // unbuffered: the forward must block
+	done := make(chan error, 1)
+	go func() { done <- eng.Stream(context.Background(), textCh, audioCh) }()
+
+	textCh <- TextChunk{Text: "hello", IsSentenceEnd: true}
+
+	// Give the receiver time to pick up the stale frame and block on the
+	// send; then barge in while it is stuck there.
+	time.Sleep(200 * time.Millisecond)
+	if err := eng.Clear(); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	select {
+	case <-sawClear:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server never saw the Clear")
+	}
+
+	// Only NOW does the consumer start draining. The blocked stale frame
+	// must have been aborted; the first thing out must be post-Clear audio.
+	select {
+	case chunk := <-audioCh:
+		if string(chunk.Data) != "fresh" {
+			t.Fatalf("first drained chunk = %q, want the post-Clear frame", chunk.Data)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("post-Clear audio never arrived")
+	}
+	close(textCh)
+	<-done
+}
+
 // A Clear racing session teardown must never produce two concurrent
 // websocket writers: the sender's Close sentinel and Clear's control
 // message share connMu, and gorilla panics (not errors) on concurrent
