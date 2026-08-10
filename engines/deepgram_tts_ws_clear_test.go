@@ -3,6 +3,9 @@ package engines
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -279,6 +282,74 @@ func TestDeepgramTTSWS_ClearAbortsBlockedForward(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("post-Clear audio never arrived")
+	}
+	close(textCh)
+	<-done
+}
+
+// A Clear that lands while the lazy connect is still dialling has no conn to
+// write to — but the engine is already holding a dequeued text chunk, and
+// speaking it once the connection comes up would voice pre-interruption text
+// after a successful Clear. The interruption epoch must drop it.
+func TestDeepgramTTSWS_ClearDuringDialDropsHeldText(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	dialGate := make(chan struct{})
+	spoke := make(chan string, 4)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-dialGate // hold the handshake so the Clear lands mid-dial
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close()
+		for {
+			_, data, err := ws.ReadMessage()
+			if err != nil {
+				return
+			}
+			var env struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(data, &env) != nil {
+				continue
+			}
+			switch env.Type {
+			case "Speak":
+				spoke <- env.Text
+			case "Close":
+				_ = ws.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "done"))
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	eng := newTestEngine(wsURL)
+	textCh := make(chan TextChunk, 4)
+	audioCh := make(chan AudioChunk, 16)
+	done := make(chan error, 1)
+	go func() { done <- eng.Stream(context.Background(), textCh, audioCh) }()
+
+	textCh <- TextChunk{Text: "held across dial", IsSentenceEnd: true}
+	// Let Stream dequeue the chunk and block in the (gated) handshake.
+	time.Sleep(100 * time.Millisecond)
+	if err := eng.Clear(); err != nil {
+		t.Fatalf("Clear during dial: %v", err)
+	}
+	close(dialGate)
+
+	textCh <- TextChunk{Text: "after barge-in", IsSentenceEnd: true}
+	select {
+	case got := <-spoke:
+		if got != "after barge-in" {
+			t.Fatalf("engine spoke %q — text held across the interruption was voiced", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("post-Clear text never spoken")
 	}
 	close(textCh)
 	<-done

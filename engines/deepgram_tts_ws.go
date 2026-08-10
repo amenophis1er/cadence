@@ -52,6 +52,13 @@ type deepgramTTSWSEngine struct {
 	// outstanding.
 	clearsPending atomic.Int64
 
+	// interruptEpoch increments on EVERY Clear call — including one that
+	// arrives while the lazy connect is still dialling and thus has no
+	// conn to write to. Each text chunk is stamped with the epoch at
+	// dequeue; the sender drops a chunk whose epoch is stale, so text the
+	// engine held across an interruption is never spoken after it.
+	interruptEpoch atomic.Int64
+
 	// clearSig is closed by Clear (and replaced with a fresh channel) to
 	// abort a receiver blocked forwarding a frame into a full audioCh —
 	// without it, a frame that passed the gate before Clear would still be
@@ -149,6 +156,11 @@ func (d *deepgramTTSWSEngine) Stream(
 	case <-ctx.Done():
 		return nil
 	}
+	// Stamp the chunk's interruption epoch at dequeue: the dial below can
+	// take hundreds of ms, and a Clear landing in that window has no conn
+	// to write to — the epoch is how the sender later knows this text
+	// predates the interruption and must not be spoken.
+	firstEpoch := d.interruptEpoch.Load()
 
 	if d.cfg.APIKey == "" {
 		return fmt.Errorf("deepgram-tts-ws: API key not configured")
@@ -224,7 +236,7 @@ func (d *deepgramTTSWSEngine) Stream(
 
 	go func() {
 		defer wg.Done()
-		sendErr = d.runSender(streamCtx, conn, first, textCh)
+		sendErr = d.runSender(streamCtx, conn, first, firstEpoch, textCh)
 		if sendErr != nil {
 			cancel()
 		}
@@ -252,14 +264,17 @@ func (d *deepgramTTSWSEngine) Stream(
 // messages until the channel closes or the context is cancelled.
 //
 // The first chunk is passed in (already consumed by Stream's lazy-connect
-// guard) so we don't lose it.
+// guard) so we don't lose it, along with the interruption epoch stamped at
+// its dequeue — a Clear during the dial makes it stale, and stale text is
+// dropped rather than spoken after the interruption.
 func (d *deepgramTTSWSEngine) runSender(
 	ctx context.Context,
 	conn *websocket.Conn,
 	first TextChunk,
+	firstEpoch int64,
 	textCh <-chan TextChunk,
 ) error {
-	if err := d.sendTextChunk(conn, first); err != nil {
+	if err := d.sendTextChunk(conn, first, firstEpoch); err != nil {
 		return err
 	}
 
@@ -288,7 +303,9 @@ func (d *deepgramTTSWSEngine) runSender(
 				d.connMu.Unlock()
 				return nil
 			}
-			if err := d.sendTextChunk(conn, chunk); err != nil {
+			// Stamp at dequeue: a chunk pulled from textCh before a
+			// concurrent Clear is pre-interruption text.
+			if err := d.sendTextChunk(conn, chunk, d.interruptEpoch.Load()); err != nil {
 				return err
 			}
 		}
@@ -297,27 +314,41 @@ func (d *deepgramTTSWSEngine) runSender(
 
 // sendTextChunk emits a Speak message for the chunk and a Flush message
 // after a sentence-end-marked chunk. Tracks chars for cost attribution.
-func (d *deepgramTTSWSEngine) sendTextChunk(conn *websocket.Conn, chunk TextChunk) error {
+//
+// epoch is the interruption epoch stamped when the chunk was dequeued. The
+// check runs under connMu, the same lock Clear increments under: either
+// this write serialises before the Clear (and the server clears the queued
+// speech), or the epoch is already stale and the chunk is dropped here —
+// there is no ordering in which stale text reaches the wire uncleared.
+func (d *deepgramTTSWSEngine) sendTextChunk(conn *websocket.Conn, chunk TextChunk, epoch int64) error {
 	if chunk.Text != "" {
-		d.usageMu.Lock()
-		d.chars += len(chunk.Text)
-		d.usageMu.Unlock()
-
 		speak, _ := json.Marshal(map[string]string{
 			"type": "Speak",
 			"text": chunk.Text,
 		})
 		// Share the writer lock with Clear — see connMu.
 		d.connMu.Lock()
+		if d.interruptEpoch.Load() != epoch {
+			d.connMu.Unlock()
+			return nil // interrupted since dequeue: drop, don't speak
+		}
 		err := conn.WriteMessage(websocket.TextMessage, speak)
 		d.connMu.Unlock()
 		if err != nil {
 			return fmt.Errorf("ws send Speak: %w", err)
 		}
+
+		d.usageMu.Lock()
+		d.chars += len(chunk.Text)
+		d.usageMu.Unlock()
 	}
 
 	if chunk.IsSentenceEnd {
 		d.connMu.Lock()
+		if d.interruptEpoch.Load() != epoch {
+			d.connMu.Unlock()
+			return nil
+		}
 		err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"Flush"}`))
 		d.connMu.Unlock()
 		if err != nil {
@@ -332,6 +363,10 @@ func (d *deepgramTTSWSEngine) sendTextChunk(conn *websocket.Conn, chunk TextChun
 // is live.
 func (d *deepgramTTSWSEngine) Clear() error {
 	d.connMu.Lock()
+	// Count the interruption even with no conn yet: a Stream may be mid-
+	// dial holding a dequeued chunk, and that text must not be spoken
+	// once the connection comes up (see interruptEpoch).
+	d.interruptEpoch.Add(1)
 	conn := d.conn
 	if conn == nil {
 		d.connMu.Unlock()
@@ -349,8 +384,15 @@ func (d *deepgramTTSWSEngine) Clear() error {
 	d.connMu.Unlock()
 	if err != nil {
 		// No Cleared will ever answer this request; without the rollback
-		// the gate would stay raised forever and mute the stream.
-		d.clearsPending.Add(-1)
+		// the gate would stay raised forever and mute the stream. Guarded
+		// CAS like the ack path: a stray Cleared may have consumed the
+		// count already, and going negative would wedge the gate open.
+		for {
+			v := d.clearsPending.Load()
+			if v <= 0 || d.clearsPending.CompareAndSwap(v, v-1) {
+				break
+			}
+		}
 		return fmt.Errorf("ws send Clear: %w", err)
 	}
 	return nil
@@ -410,6 +452,15 @@ func (d *deepgramTTSWSEngine) runReceiver(
 			// boundaries by the consumer.
 			out := make([]byte, len(data))
 			copy(out, data)
+			// Priority check first: if a Clear already landed, drop
+			// unconditionally. A single select would pick pseudo-randomly
+			// when both the send and the closed sig are ready, forwarding
+			// stale audio about half the time.
+			select {
+			case <-sig:
+				continue
+			default:
+			}
 			select {
 			case audioCh <- AudioChunk{Data: out}:
 			case <-sig:
@@ -437,9 +488,15 @@ func (d *deepgramTTSWSEngine) runReceiver(
 				// One outstanding Clear is now fully accounted for.
 				// Resume forwarding only when no OTHER Clear is still
 				// pending — a rapid double barge-in must keep the gate
-				// up until the last ack.
-				if d.clearsPending.Load() > 0 {
-					d.clearsPending.Add(-1)
+				// up until the last ack. CAS, not load-then-add: a
+				// concurrent Clear write-error rollback also decrements,
+				// and a plain add could drive the counter negative,
+				// wedging the gate open for the rest of the session.
+				for {
+					v := d.clearsPending.Load()
+					if v <= 0 || d.clearsPending.CompareAndSwap(v, v-1) {
+						break
+					}
 				}
 			case "Warning":
 				warn := env.WarnMsg
