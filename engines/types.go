@@ -152,6 +152,12 @@ type STTEvent struct {
 	// the smallest safe timeout for a population of calls is the tail of
 	// this distribution — but the wrong number for describing how long the
 	// speaker actually went quiet.
+	//
+	// The gap is stamped at the same points the debounce timer is armed and
+	// cancelled, on the same goroutine — it shares the debounce's own
+	// clock, so whatever delays exist upstream, timeout < gap ⇔ the turn
+	// would have split. (Event delivery is non-blocking and cannot stall
+	// the measurement.)
 	MaxSegmentGapMs int64
 }
 
