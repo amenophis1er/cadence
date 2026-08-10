@@ -235,9 +235,11 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 	var flushTimer *time.Timer
 	stopped := false // protected by flushMu
 
-	// lastResultAt is when the most recent speech-bearing result arrived.
-	// It anchors STTEvent.HeldMs — how long this engine held the utterance
-	// before committing. Protected by flushMu.
+	// lastResultAt is when the most recent is_final result arrived —
+	// interim results carry speech too but don't update it, since only
+	// finals enter the utterance buffer. It anchors STTEvent.HeldMs — how
+	// long this engine held the utterance before committing. Protected by
+	// flushMu.
 	var lastResultAt time.Time
 
 	// flushFinalLocked flushes the accumulated text and emits the final

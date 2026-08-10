@@ -116,8 +116,11 @@ type STTEvent struct {
 	CommittedBy CommitPolicy
 
 	// HeldMs is how long THIS engine held the utterance locally before
-	// committing it: measured from the last speech-bearing result to the
-	// commit. Populated on TranscriptFinal only.
+	// committing it: measured from the last finalized (is_final) result
+	// to the commit. Populated on TranscriptFinal only. For multi-segment
+	// utterances the anchor is the LAST segment, so earlier segments'
+	// hold time is not included; on a CommitSessionEnd flush it can be
+	// large if the stream sat idle after the last final before ending.
 	//
 	// Note what it does NOT include: when CommittedBy is
 	// CommitSpeechFinal, the provider did its own silence-threshold wait

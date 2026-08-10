@@ -80,6 +80,9 @@ for ev := range events {
     case engines.STTSpeechStarted:   // caller began talking — barge-in signal
     case engines.STTTranscriptDelta: // live partial: ev.Text
     case engines.STTTranscriptFinal: // committed utterance: ev.Text
+        // ev.CommittedBy says which rule ended the turn (provider
+        // speech_final vs fallback debounce); ev.HeldMs is how long the
+        // engine held it locally. Zero on all other event types.
     }
 }
 ```
@@ -155,8 +158,10 @@ if ur, ok := llm.(engines.UsageReporter); ok {
   engines without server-side endpointing (onset debounce, exactly-once
   utterance-end signaling).
 - **Observability hooks** — cadence records nothing itself; install
-  `engines.OnTTSStreamEnd` (and friends as they grow) to feed Prometheus,
-  OpenTelemetry, or plain logs.
+  `engines.OnTTSStreamEnd` or `engines.OnSTTCommit` (which attributes each
+  utterance commit to provider endpointing vs the fallback debounce) to
+  feed Prometheus, OpenTelemetry, or plain logs. Hooks run on engine hot
+  paths — record and return, don't block.
 
 ## Measured, not claimed
 

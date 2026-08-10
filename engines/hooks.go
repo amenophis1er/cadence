@@ -18,5 +18,11 @@ var (
 	// tune, so it is the one worth graphing: a rising share of
 	// CommitFlushTimeout means the provider has stopped signalling
 	// end-of-utterance and every affected turn is paying the debounce.
+	//
+	// Implementations MUST NOT block: unlike OnTTSStreamEnd, this hook is
+	// invoked on the engine's hot path while its internal commit lock is
+	// held, so a slow hook stalls transcript delivery and shutdown. Record
+	// the observation (counter increment, channel send to a buffered
+	// collector) and return.
 	OnSTTCommit = func(engine string, policy CommitPolicy, heldMs int64) {}
 )
