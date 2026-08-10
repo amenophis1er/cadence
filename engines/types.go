@@ -237,6 +237,47 @@ type StreamingTTSEngine interface {
 	ProviderRequestID() string
 }
 
+// InterruptibleTTSEngine is the optional capability a StreamingTTSEngine
+// implements when it can abandon in-flight synthesis WITHOUT ending the
+// session — the barge-in primitive.
+//
+// Why this is separate from ctx cancellation: cancelling a Stream() ends it
+// ("one Stream() invocation per call"), which for a barge-in means tearing
+// down the warm WebSocket and paying a fresh handshake before the agent can
+// speak again. A caller who interrupts twice in one conversation would pay it
+// twice. Clear instead discards what is queued and leaves the session warm
+// and immediately reusable.
+//
+// Contract:
+//
+//   - Clear may be called from a different goroutine than the one driving
+//     Stream, and only while a Stream is live; before or after, it is a no-op
+//     returning nil.
+//   - Audio the vendor had already queued is discarded by the ENGINE, not the
+//     consumer: after Clear returns, no further pre-interruption chunks are
+//     FORWARDED to audioCh. Chunks the engine had already delivered before
+//     Clear may still sit in audioCh's buffer (the channel is caller-owned) —
+//     a consumer doing barge-in should drop what it has already dequeued or
+//     buffered for playback, but never has to reason about the vendor's
+//     in-flight boundary.
+//   - The session stays open. Text pushed to textCh after Clear is spoken
+//     normally on the same connection.
+//   - Symmetrically to the audioCh caveat: text chunks already sitting in
+//     textCh's buffer when Clear lands are indistinguishable from post-Clear
+//     text and WILL be spoken (the channel is caller-owned; only the producer
+//     knows which chunks belong to the abandoned turn). A barge-in consumer
+//     must stop its own text production for the interrupted response — in
+//     practice, cancel the LLM turn feeding textCh — as it calls Clear. The
+//     engine's guarantee covers text it has already taken OUT of textCh: a
+//     chunk dequeued before the interruption (e.g. held across the lazy
+//     connect's dial) is dropped, not spoken.
+type InterruptibleTTSEngine interface {
+	StreamingTTSEngine
+
+	// Clear abandons queued synthesis and keeps the session usable.
+	Clear() error
+}
+
 // LLMEngine streams a chat completion event-by-event.
 type LLMEngine interface {
 	Stream(ctx context.Context, messages []LLMMessage, tools []ToolDef, out chan<- LLMEvent) error

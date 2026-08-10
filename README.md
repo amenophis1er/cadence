@@ -103,12 +103,29 @@ go tts.Stream(ctx, textCh, audioCh) // one warm connection for the whole call
 
 textCh <- engines.TextChunk{Text: "Hello! How can I help?", IsSentenceEnd: true}
 // … keep sending sentences as the LLM produces them; close(textCh) when done.
-// Cancel ctx to barge-in: the engine drains and exits.
 
 for chunk := range audioCh {
     playToCaller(chunk.Data)
 }
 ```
+
+Barge-in — from the goroutine that detects the caller speaking (e.g. on
+`STTSpeechStarted`), while the stream above is live. Engines implementing
+`InterruptibleTTSEngine` (Deepgram WS today) abandon queued speech and keep
+the connection warm — no teardown, no re-handshake before the agent speaks
+again:
+
+```go
+if it, ok := tts.(engines.InterruptibleTTSEngine); ok {
+    it.Clear() // drop queued audio; the session stays usable
+} else {
+    cancel() // engines without it: cancel Stream's ctx, ending the session
+}
+```
+
+Alongside `Clear`, stop feeding textCh from the interrupted response (cancel
+the LLM turn): chunks already buffered in textCh are caller-owned and will
+still be spoken — see the `InterruptibleTTSEngine` contract.
 
 ### Streaming LLM, sentence-aligned for TTS
 
@@ -187,8 +204,10 @@ sentence-buffer and VAD trade-offs. The harnesses live in
 - **Telephony-native.** Audio contracts are μ-law 8 kHz, 20 ms frames —
   what real phone networks speak. `PushAudio` is non-blocking and drops on
   overrun rather than stalling the audio loop.
-- **Barge-in is context cancellation.** No custom stop protocol: cancel the
-  context, the engine sends the vendor's EOS, drains, and returns.
+- **Barge-in without teardown where the vendor allows it.** Engines
+  implementing `InterruptibleTTSEngine` expose `Clear()`: queued speech is
+  abandoned, the session stays warm. Everywhere else, cancel the context —
+  the engine sends the vendor's EOS, drains, and returns.
 - **Orchestration stays yours.** Cadence deliberately ships engines, not a
   conversation loop — turn-taking, interruption policy and state belong to
   the application.
