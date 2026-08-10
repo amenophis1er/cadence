@@ -72,9 +72,17 @@ func (a *anthropicEngine) Usage() Usage {
 }
 
 // Stream sends one Messages request and emits LLMEvents as the
-// response streams in. Closes `out` on completion (success or error).
+// response streams in. Closes `out` on completion (success or error);
+// a terminal "done" event is always emitted first (see emitTerminalDone
+// for the failure-path semantics).
 func (a *anthropicEngine) Stream(ctx context.Context, messages []LLMMessage, toolDefs []ToolDef, out chan<- LLMEvent) error {
-	defer close(out)
+	streamOK := false
+	defer func() {
+		if !streamOK {
+			emitTerminalDone(ctx, out)
+		}
+		close(out)
+	}()
 
 	body, err := json.Marshal(buildAnthropicRequest(a.cfg, messages, toolDefs))
 	if err != nil {
@@ -103,6 +111,7 @@ func (a *anthropicEngine) Stream(ctx context.Context, messages []LLMMessage, too
 	}
 
 	usage, err := parseAnthropicSSE(ctx, resp.Body, out)
+	streamOK = err == nil // parser emitted its own "done"
 	if usage.TokensIn != 0 || usage.TokensOut != 0 {
 		a.usageMu.Lock()
 		a.tokensIn += usage.TokensIn

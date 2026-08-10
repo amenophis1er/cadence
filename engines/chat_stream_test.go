@@ -145,16 +145,32 @@ func cancelMidStream(t *testing.T, eng LLMEngine) {
 	case <-time.After(streamTestTimeout):
 		t.Fatal("Stream did not return after context cancellation")
 	}
-	// Engine closes `out` on return; drain to confirm (bounded).
+	// Engine closes `out` on return; drain to confirm (bounded). The
+	// buffered channel has room, so the best-effort terminal done event
+	// must have landed with FinishReason "cancelled".
+	var last *LLMEvent
 	for {
 		select {
-		case _, ok := <-out:
+		case ev, ok := <-out:
 			if !ok {
+				if last == nil || last.Type != "done" || last.FinishReason != "cancelled" {
+					t.Errorf("last event after cancel = %+v, want done/cancelled", last)
+				}
 				return
 			}
+			last = &ev
 		case <-time.After(streamTestTimeout):
 			t.Fatal("events channel never closed after cancellation")
 		}
+	}
+}
+
+// expectTerminalDone asserts a failed Stream emitted exactly one event:
+// the terminal done with the given FinishReason.
+func expectTerminalDone(t *testing.T, events []LLMEvent, wantReason string) {
+	t.Helper()
+	if len(events) != 1 || events[0].Type != "done" || events[0].FinishReason != wantReason {
+		t.Errorf("events = %+v, want single done event with FinishReason %q", events, wantReason)
 	}
 }
 
@@ -313,7 +329,7 @@ func TestChatStream_ContextCancel(t *testing.T) {
 }
 
 // TestChatStream_HTTPError: a 429 with a JSON error body must surface
-// as a descriptive error (status + body) with no events emitted.
+// as a descriptive error (status + body) plus a terminal done/error event.
 func TestChatStream_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -330,9 +346,7 @@ func TestChatStream_HTTPError(t *testing.T) {
 	if !strings.Contains(err.Error(), "429") || !strings.Contains(err.Error(), "rate limit exceeded") {
 		t.Errorf("error = %v, want status + body", err)
 	}
-	if len(events) != 0 {
-		t.Errorf("events = %+v, want none on HTTP error", events)
-	}
+	expectTerminalDone(t, events, "error")
 }
 
 // TestChatStream_MalformedDataLine: a garbage data line between valid

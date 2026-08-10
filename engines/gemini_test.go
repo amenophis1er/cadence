@@ -215,22 +215,19 @@ func TestGeminiStream_HTTPError(t *testing.T) {
 	if !strings.Contains(err.Error(), "429") || !strings.Contains(err.Error(), "RESOURCE_EXHAUSTED") {
 		t.Errorf("error = %v, want status + body", err)
 	}
-	if len(events) != 0 {
-		t.Errorf("events = %+v, want none on HTTP error", events)
-	}
+	expectTerminalDone(t, events, "error")
 }
 
 // TestGeminiStream_NoModelConfigured: a missing model is rejected
-// before any HTTP request, with the events channel still closed.
+// before any HTTP request, with a terminal done/error event emitted
+// and the events channel closed.
 func TestGeminiStream_NoModelConfigured(t *testing.T) {
 	eng := NewGemini(GeminiConfig{URL: "http://127.0.0.1:0", APIKey: "k"})
 	events, err := runLLMStream(t, context.Background(), eng, []LLMMessage{{Role: "user", Content: "hi"}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "model not configured") {
 		t.Errorf("error = %v, want model-not-configured", err)
 	}
-	if len(events) != 0 {
-		t.Errorf("events = %+v, want none", events)
-	}
+	expectTerminalDone(t, events, "error")
 }
 
 // TestGeminiStream_MalformedDataLine: a garbage data line is skipped

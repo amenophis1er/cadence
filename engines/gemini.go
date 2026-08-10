@@ -52,9 +52,17 @@ func (g *geminiEngine) Usage() Usage {
 }
 
 // Stream sends one streamGenerateContent request and emits LLMEvents
-// as the response streams in. Closes `out` on completion.
+// as the response streams in. Closes `out` on completion; a terminal
+// "done" event is always emitted first (see emitTerminalDone for the
+// failure-path semantics).
 func (g *geminiEngine) Stream(ctx context.Context, messages []LLMMessage, toolDefs []ToolDef, out chan<- LLMEvent) error {
-	defer close(out)
+	streamOK := false
+	defer func() {
+		if !streamOK {
+			emitTerminalDone(ctx, out)
+		}
+		close(out)
+	}()
 
 	if g.cfg.Model == "" {
 		return fmt.Errorf("gemini: model not configured")
@@ -102,6 +110,7 @@ func (g *geminiEngine) Stream(ctx context.Context, messages []LLMMessage, toolDe
 	}
 
 	usage, err := parseGeminiSSE(ctx, resp.Body, out)
+	streamOK = err == nil // parser emitted its own "done"
 	if usage.TokensIn != 0 || usage.TokensOut != 0 {
 		g.usageMu.Lock()
 		g.tokensIn += usage.TokensIn
