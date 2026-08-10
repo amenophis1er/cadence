@@ -1,0 +1,4 @@
+# Local benchmark output — bench/ holds the harnesses; numbers are
+# reproduced, not committed.
+*_results.json
+vad_results.json

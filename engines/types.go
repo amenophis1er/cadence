@@ -135,6 +135,30 @@ type STTEvent struct {
 	// to attribute latency this engine controls, not as a total
 	// speech-to-commit measure.
 	HeldMs int64
+
+	// MaxSegmentGapMs is the longest gap between consecutive is_final
+	// results that the engine merged into this one turn, measured arrival
+	// to arrival. Populated on TranscriptFinal only; 0 for a
+	// single-segment utterance.
+	//
+	// Note what it measures: NOT the audible pause alone. The inter-arrival
+	// gap spans the speaker's silence PLUS the next segment's speech up to
+	// the provider finalizing it (plus network) — it upper-bounds the pause,
+	// often substantially. That is deliberate: the flush debounce is
+	// re-armed on each is_final arrival, so a turn splits exactly when the
+	// timeout is shorter than this gap. It is therefore the right number
+	// for picking a flush timeout — a timeout below this value would have
+	// committed mid-utterance and split the speaker's sentence in two, so
+	// the smallest safe timeout for a population of calls is the tail of
+	// this distribution — but the wrong number for describing how long the
+	// speaker actually went quiet.
+	//
+	// The gap is stamped at the same points the debounce timer is armed and
+	// cancelled, on the same goroutine — it shares the debounce's own
+	// clock, so whatever delays exist upstream, timeout < gap ⇔ the turn
+	// would have split. (Event delivery is non-blocking and cannot stall
+	// the measurement.)
+	MaxSegmentGapMs int64
 }
 
 // CommitPolicy names the rule that committed an utterance, so a consumer can
