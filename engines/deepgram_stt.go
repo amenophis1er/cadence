@@ -241,8 +241,9 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 	// long this engine held the utterance before committing. Protected by
 	// flushMu.
 	var lastResultAt time.Time
-	// maxSegmentGap is the longest pause between is_final segments merged into
-	// the current utterance — what a shorter flush timeout would have cut.
+	// maxSegmentGap is the longest is_final inter-arrival gap within the
+	// current utterance — what a shorter flush timeout would have cut. Not
+	// the audible pause: see STTEvent.MaxSegmentGapMs. Protected by flushMu.
 	var maxSegmentGap time.Duration
 
 	// flushGen invalidates stale debounce callbacks. timer.Stop() cannot
@@ -401,9 +402,10 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 				// answers) merge here so the consumer sees one user turn.
 				if utterance.Len() > 0 {
 					utterance.WriteString(" ")
-					// A continuation: the speaker paused this long and then
-					// kept going, so any flush timeout shorter than this gap
-					// would have split their sentence.
+					// A continuation: the debounce ran this long without
+					// firing before the next is_final landed, so any flush
+					// timeout shorter than this gap would have split the
+					// speaker's sentence here.
 					if !lastResultAt.IsZero() {
 						if gap := time.Since(lastResultAt); gap > maxSegmentGap {
 							maxSegmentGap = gap

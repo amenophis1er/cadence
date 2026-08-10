@@ -136,15 +136,22 @@ type STTEvent struct {
 	// speech-to-commit measure.
 	HeldMs int64
 
-	// MaxSegmentGapMs is the longest pause WITHIN this utterance: the biggest
-	// gap between consecutive is_final segments that the engine merged into
-	// one turn. Populated on TranscriptFinal only; 0 for a single-segment
-	// utterance.
+	// MaxSegmentGapMs is the longest gap between consecutive is_final
+	// results that the engine merged into this one turn, measured arrival
+	// to arrival. Populated on TranscriptFinal only; 0 for a
+	// single-segment utterance.
 	//
-	// It is the number that picks a flush timeout. A timeout below this value
-	// would have committed mid-utterance and split the speaker's sentence in
-	// two, so the smallest safe timeout for a population of calls is the tail
-	// of this distribution — measured, rather than guessed from a default.
+	// Note what it measures: NOT the audible pause alone. The inter-arrival
+	// gap spans the speaker's silence PLUS the next segment's speech up to
+	// the provider finalizing it (plus network) — it upper-bounds the pause,
+	// often substantially. That is deliberate: the flush debounce is
+	// re-armed on each is_final arrival, so a turn splits exactly when the
+	// timeout is shorter than this gap. It is therefore the right number
+	// for picking a flush timeout — a timeout below this value would have
+	// committed mid-utterance and split the speaker's sentence in two, so
+	// the smallest safe timeout for a population of calls is the tail of
+	// this distribution — but the wrong number for describing how long the
+	// speaker actually went quiet.
 	MaxSegmentGapMs int64
 }
 

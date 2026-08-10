@@ -82,7 +82,10 @@ for ev := range events {
     case engines.STTTranscriptFinal: // committed utterance: ev.Text
         // ev.CommittedBy says which rule ended the turn (provider
         // speech_final vs fallback debounce); ev.HeldMs is how long the
-        // engine held it locally. Zero on all other event types.
+        // engine held it locally; ev.MaxSegmentGapMs is the longest
+        // is_final inter-arrival gap merged into this turn — its tail
+        // across calls is the smallest safe FlushTimeoutMs. Zero on all
+        // other event types.
     }
 }
 ```
