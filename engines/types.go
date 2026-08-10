@@ -111,7 +111,48 @@ type STTEvent struct {
 	Type STTEventType
 	Text string // populated for TranscriptDelta + TranscriptFinal
 	Err  error  // populated for Error
+
+	// CommittedBy names the rule that ended the utterance. Populated on
+	// TranscriptFinal only; empty on every other event type.
+	//
+	// This matters because the paths differ by roughly a second of
+	// caller-perceived latency, and without it a consumer cannot tell a
+	// snappy provider-endpointed turn from one that sat waiting on the
+	// fallback debounce — they arrive as the same event.
+	CommittedBy CommitPolicy
+
+	// HeldMs is how long THIS engine held the utterance locally before
+	// committing it: measured from the last finalized (is_final) result
+	// to the commit. Populated on TranscriptFinal only. For multi-segment
+	// utterances the anchor is the LAST segment, so earlier segments'
+	// hold time is not included; on a CommitSessionEnd flush it can be
+	// large if the stream sat idle after the last final before ending.
+	//
+	// Note what it does NOT include: when CommittedBy is
+	// CommitSpeechFinal, the provider did its own silence-threshold wait
+	// server-side before telling us, and that wait is invisible from here
+	// — expect a small HeldMs even though the caller waited longer. Use it
+	// to attribute latency this engine controls, not as a total
+	// speech-to-commit measure.
+	HeldMs int64
 }
+
+// CommitPolicy names the rule that committed an utterance, so a consumer can
+// attribute endpointing latency instead of inferring it.
+type CommitPolicy string
+
+const (
+	// CommitSpeechFinal: the provider signalled end-of-utterance itself
+	// (e.g. Deepgram speech_final) and the engine committed immediately.
+	CommitSpeechFinal CommitPolicy = "speech_final"
+	// CommitFlushTimeout: the provider never signalled end-of-utterance, so
+	// the engine committed its buffered finals after the flush debounce.
+	// Systematically slower than CommitSpeechFinal by roughly the debounce.
+	CommitFlushTimeout CommitPolicy = "flush_timeout"
+	// CommitSessionEnd: the stream ended (hangup, read error) with text
+	// still buffered, and the engine flushed it rather than lose it.
+	CommitSessionEnd CommitPolicy = "session_end"
+)
 
 // STTEventType enumerates the streaming STT lifecycle.
 type STTEventType int
