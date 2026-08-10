@@ -190,6 +190,35 @@ type StreamingTTSEngine interface {
 	ProviderRequestID() string
 }
 
+// InterruptibleTTSEngine is the optional capability a StreamingTTSEngine
+// implements when it can abandon in-flight synthesis WITHOUT ending the
+// session — the barge-in primitive.
+//
+// Why this is separate from ctx cancellation: cancelling a Stream() ends it
+// ("one Stream() invocation per call"), which for a barge-in means tearing
+// down the warm WebSocket and paying a fresh handshake before the agent can
+// speak again. A caller who interrupts twice in one conversation would pay it
+// twice. Clear instead discards what is queued and leaves the session warm
+// and immediately reusable.
+//
+// Contract:
+//
+//   - Clear may be called from a different goroutine than the one driving
+//     Stream, and only while a Stream is live; before or after, it is a no-op
+//     returning nil.
+//   - Audio the vendor had already queued is discarded by the ENGINE, not the
+//     consumer: after Clear returns, audioCh yields no further chunks from
+//     before the interruption. Consumers never have to reason about the
+//     vendor's in-flight boundary.
+//   - The session stays open. Text pushed to textCh after Clear is spoken
+//     normally on the same connection.
+type InterruptibleTTSEngine interface {
+	StreamingTTSEngine
+
+	// Clear abandons queued synthesis and keeps the session usable.
+	Clear() error
+}
+
 // LLMEngine streams a chat completion event-by-event.
 type LLMEngine interface {
 	Stream(ctx context.Context, messages []LLMMessage, tools []ToolDef, out chan<- LLMEvent) error

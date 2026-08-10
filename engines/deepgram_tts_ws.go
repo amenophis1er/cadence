@@ -36,6 +36,19 @@ import (
 type deepgramTTSWSEngine struct {
 	cfg DeepgramTTSConfig
 
+	// connMu guards conn AND serialises every write to it. Clear() is
+	// called from the consumer's goroutine while runSender writes from its
+	// own, and gorilla permits only one concurrent writer per connection.
+	// conn is non-nil only while a Stream is live.
+	connMu sync.Mutex
+	conn   *websocket.Conn
+
+	// discarding is raised by Clear and lowered when the server's Cleared
+	// confirmation arrives. While raised, the receiver drops audio frames:
+	// those were synthesised before the interruption, so playing them is
+	// exactly the stale-speech artefact barge-in exists to prevent.
+	discarding atomic.Bool
+
 	// providerRequestID holds the captured dg-request-id. Read from
 	// multiple goroutines (engine, mediator's RecordLegSessions);
 	// atomic.Value lets the writer in Stream() and the readers in
@@ -155,6 +168,19 @@ func (d *deepgramTTSWSEngine) Stream(
 	}
 	defer conn.Close()
 
+	// Publish the connection so Clear() can reach it, and retract it when
+	// the stream ends so a late Clear is a no-op rather than a write to a
+	// closed socket.
+	d.connMu.Lock()
+	d.conn = conn
+	d.connMu.Unlock()
+	defer func() {
+		d.connMu.Lock()
+		d.conn = nil
+		d.connMu.Unlock()
+		d.discarding.Store(false)
+	}()
+
 	// Capture dg-request-id from the handshake response BEFORE we drop resp.
 	if resp != nil {
 		reqID := resp.Header.Get("dg-request-id")
@@ -262,15 +288,45 @@ func (d *deepgramTTSWSEngine) sendTextChunk(conn *websocket.Conn, chunk TextChun
 			"type": "Speak",
 			"text": chunk.Text,
 		})
-		if err := conn.WriteMessage(websocket.TextMessage, speak); err != nil {
+		// Share the writer lock with Clear — see connMu.
+		d.connMu.Lock()
+		err := conn.WriteMessage(websocket.TextMessage, speak)
+		d.connMu.Unlock()
+		if err != nil {
 			return fmt.Errorf("ws send Speak: %w", err)
 		}
 	}
 
 	if chunk.IsSentenceEnd {
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"Flush"}`)); err != nil {
+		d.connMu.Lock()
+		err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"Flush"}`))
+		d.connMu.Unlock()
+		if err != nil {
 			return fmt.Errorf("ws send Flush: %w", err)
 		}
+	}
+	return nil
+}
+
+// Clear implements InterruptibleTTSEngine: abandon queued synthesis, keep the
+// session warm. Safe to call from any goroutine, and a no-op when no stream
+// is live.
+func (d *deepgramTTSWSEngine) Clear() error {
+	d.connMu.Lock()
+	conn := d.conn
+	if conn == nil {
+		d.connMu.Unlock()
+		return nil // no live stream: nothing queued to abandon
+	}
+	// Raise the gate BEFORE the wire write, so audio arriving between the
+	// write and the server's acknowledgement is already being dropped.
+	d.discarding.Store(true)
+	err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"Clear"}`))
+	d.connMu.Unlock()
+	if err != nil {
+		// The gate would otherwise stay raised forever and mute the stream.
+		d.discarding.Store(false)
+		return fmt.Errorf("ws send Clear: %w", err)
 	}
 	return nil
 }
@@ -311,6 +367,12 @@ func (d *deepgramTTSWSEngine) runReceiver(
 			if len(data) == 0 {
 				continue
 			}
+			// Synthesised before an interruption — dropping it here is
+			// what spares every consumer from tracking the vendor's
+			// in-flight boundary itself.
+			if d.discarding.Load() {
+				continue
+			}
 			// Copy the slice — gorilla reuses its read buffer between
 			// calls, and the chunk may be held across goroutine
 			// boundaries by the consumer.
@@ -331,6 +393,12 @@ func (d *deepgramTTSWSEngine) runReceiver(
 				Type    string `json:"type"`
 				WarnMsg string `json:"warn_msg,omitempty"`
 				Message string `json:"message,omitempty"`
+			}
+			if json.Unmarshal(data, &env) == nil && env.Type == "Cleared" {
+				// Everything queued before the Clear has now been
+				// accounted for; resume forwarding audio.
+				d.discarding.Store(false)
+				continue
 			}
 			if json.Unmarshal(data, &env) == nil && env.Type == "Warning" {
 				warn := env.WarnMsg
