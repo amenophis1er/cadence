@@ -241,6 +241,9 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 	// long this engine held the utterance before committing. Protected by
 	// flushMu.
 	var lastResultAt time.Time
+	// maxSegmentGap is the longest pause between is_final segments merged into
+	// the current utterance — what a shorter flush timeout would have cut.
+	var maxSegmentGap time.Duration
 
 	// flushGen invalidates stale debounce callbacks. timer.Stop() cannot
 	// cancel a callback that has already fired and is waiting on flushMu —
@@ -269,15 +272,17 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 				heldMs = time.Since(lastResultAt).Milliseconds()
 			}
 			emitSTT(events, STTEvent{
-				Type:        STTTranscriptFinal,
-				Text:        text,
-				CommittedBy: policy,
-				HeldMs:      heldMs,
+				Type:            STTTranscriptFinal,
+				Text:            text,
+				CommittedBy:     policy,
+				HeldMs:          heldMs,
+				MaxSegmentGapMs: maxSegmentGap.Milliseconds(),
 			})
 			d.finalsEmitted.Add(1)
 			OnSTTCommit(d.Name(), policy, heldMs)
 		}
 		lastResultAt = time.Time{}
+		maxSegmentGap = 0
 	}
 
 	// flushFinal is the self-locking entry point for the session-end path
@@ -396,6 +401,14 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 				// answers) merge here so the consumer sees one user turn.
 				if utterance.Len() > 0 {
 					utterance.WriteString(" ")
+					// A continuation: the speaker paused this long and then
+					// kept going, so any flush timeout shorter than this gap
+					// would have split their sentence.
+					if !lastResultAt.IsZero() {
+						if gap := time.Since(lastResultAt); gap > maxSegmentGap {
+							maxSegmentGap = gap
+						}
+					}
 				}
 				utterance.WriteString(text)
 				lastResultAt = time.Now()

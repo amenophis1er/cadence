@@ -135,6 +135,17 @@ type STTEvent struct {
 	// to attribute latency this engine controls, not as a total
 	// speech-to-commit measure.
 	HeldMs int64
+
+	// MaxSegmentGapMs is the longest pause WITHIN this utterance: the biggest
+	// gap between consecutive is_final segments that the engine merged into
+	// one turn. Populated on TranscriptFinal only; 0 for a single-segment
+	// utterance.
+	//
+	// It is the number that picks a flush timeout. A timeout below this value
+	// would have committed mid-utterance and split the speaker's sentence in
+	// two, so the smallest safe timeout for a population of calls is the tail
+	// of this distribution — measured, rather than guessed from a default.
+	MaxSegmentGapMs int64
 }
 
 // CommitPolicy names the rule that committed an utterance, so a consumer can

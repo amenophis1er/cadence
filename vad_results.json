@@ -1,0 +1,290 @@
+[
+  {
+    "offset_ms": 200,
+    "pause_ms": 200,
+    "cut_rate": 1,
+    "med_commit_ms": 140,
+    "p95_commit_ms": 160,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 200,
+    "pause_ms": 300,
+    "cut_rate": 1,
+    "med_commit_ms": 140,
+    "p95_commit_ms": 160,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 200,
+    "pause_ms": 400,
+    "cut_rate": 1,
+    "med_commit_ms": 140,
+    "p95_commit_ms": 160,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 200,
+    "pause_ms": 500,
+    "cut_rate": 1,
+    "med_commit_ms": 140,
+    "p95_commit_ms": 160,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 200,
+    "pause_ms": 600,
+    "cut_rate": 1,
+    "med_commit_ms": 140,
+    "p95_commit_ms": 160,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 200,
+    "pause_ms": 800,
+    "cut_rate": 1,
+    "med_commit_ms": 140,
+    "p95_commit_ms": 160,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 300,
+    "pause_ms": 200,
+    "cut_rate": 0,
+    "med_commit_ms": 240,
+    "p95_commit_ms": 260,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 300,
+    "pause_ms": 300,
+    "cut_rate": 1,
+    "med_commit_ms": 240,
+    "p95_commit_ms": 260,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 300,
+    "pause_ms": 400,
+    "cut_rate": 1,
+    "med_commit_ms": 240,
+    "p95_commit_ms": 260,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 300,
+    "pause_ms": 500,
+    "cut_rate": 1,
+    "med_commit_ms": 240,
+    "p95_commit_ms": 260,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 300,
+    "pause_ms": 600,
+    "cut_rate": 1,
+    "med_commit_ms": 240,
+    "p95_commit_ms": 260,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 300,
+    "pause_ms": 800,
+    "cut_rate": 1,
+    "med_commit_ms": 240,
+    "p95_commit_ms": 260,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 400,
+    "pause_ms": 200,
+    "cut_rate": 0,
+    "med_commit_ms": 340,
+    "p95_commit_ms": 360,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 400,
+    "pause_ms": 300,
+    "cut_rate": 0,
+    "med_commit_ms": 340,
+    "p95_commit_ms": 360,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 400,
+    "pause_ms": 400,
+    "cut_rate": 1,
+    "med_commit_ms": 340,
+    "p95_commit_ms": 360,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 400,
+    "pause_ms": 500,
+    "cut_rate": 1,
+    "med_commit_ms": 340,
+    "p95_commit_ms": 360,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 400,
+    "pause_ms": 600,
+    "cut_rate": 1,
+    "med_commit_ms": 340,
+    "p95_commit_ms": 360,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 400,
+    "pause_ms": 800,
+    "cut_rate": 1,
+    "med_commit_ms": 340,
+    "p95_commit_ms": 360,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 500,
+    "pause_ms": 200,
+    "cut_rate": 0,
+    "med_commit_ms": 440,
+    "p95_commit_ms": 460,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 500,
+    "pause_ms": 300,
+    "cut_rate": 0,
+    "med_commit_ms": 440,
+    "p95_commit_ms": 460,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 500,
+    "pause_ms": 400,
+    "cut_rate": 0,
+    "med_commit_ms": 440,
+    "p95_commit_ms": 460,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 500,
+    "pause_ms": 500,
+    "cut_rate": 1,
+    "med_commit_ms": 440,
+    "p95_commit_ms": 460,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 500,
+    "pause_ms": 600,
+    "cut_rate": 1,
+    "med_commit_ms": 440,
+    "p95_commit_ms": 460,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 500,
+    "pause_ms": 800,
+    "cut_rate": 1,
+    "med_commit_ms": 440,
+    "p95_commit_ms": 460,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 600,
+    "pause_ms": 200,
+    "cut_rate": 0,
+    "med_commit_ms": 540,
+    "p95_commit_ms": 560,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 600,
+    "pause_ms": 300,
+    "cut_rate": 0,
+    "med_commit_ms": 540,
+    "p95_commit_ms": 560,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 600,
+    "pause_ms": 400,
+    "cut_rate": 0,
+    "med_commit_ms": 540,
+    "p95_commit_ms": 560,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 600,
+    "pause_ms": 500,
+    "cut_rate": 0,
+    "med_commit_ms": 540,
+    "p95_commit_ms": 560,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 600,
+    "pause_ms": 600,
+    "cut_rate": 1,
+    "med_commit_ms": 540,
+    "p95_commit_ms": 560,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 600,
+    "pause_ms": 800,
+    "cut_rate": 1,
+    "med_commit_ms": 540,
+    "p95_commit_ms": 560,
+    "shipped_impl": false
+  },
+  {
+    "offset_ms": 300,
+    "pause_ms": 200,
+    "cut_rate": 0,
+    "med_commit_ms": 240,
+    "p95_commit_ms": 260,
+    "shipped_impl": true
+  },
+  {
+    "offset_ms": 300,
+    "pause_ms": 300,
+    "cut_rate": 1,
+    "med_commit_ms": 240,
+    "p95_commit_ms": 260,
+    "shipped_impl": true
+  },
+  {
+    "offset_ms": 300,
+    "pause_ms": 400,
+    "cut_rate": 1,
+    "med_commit_ms": 240,
+    "p95_commit_ms": 260,
+    "shipped_impl": true
+  },
+  {
+    "offset_ms": 300,
+    "pause_ms": 500,
+    "cut_rate": 1,
+    "med_commit_ms": 240,
+    "p95_commit_ms": 260,
+    "shipped_impl": true
+  },
+  {
+    "offset_ms": 300,
+    "pause_ms": 600,
+    "cut_rate": 1,
+    "med_commit_ms": 240,
+    "p95_commit_ms": 260,
+    "shipped_impl": true
+  },
+  {
+    "offset_ms": 300,
+    "pause_ms": 800,
+    "cut_rate": 1,
+    "med_commit_ms": 240,
+    "p95_commit_ms": 260,
+    "shipped_impl": true
+  }
+]
