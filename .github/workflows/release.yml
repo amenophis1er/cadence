@@ -21,6 +21,13 @@ jobs:
       - name: test before release
         run: go test -race -count=1 ./...
       - name: create GitHub release
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes
+        # Idempotent: a release may already exist for this tag (created by
+        # hand with curated notes) — that's success, not a failure.
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists — nothing to do"
+          else
+            gh release create "$GITHUB_REF_NAME" --generate-notes
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
