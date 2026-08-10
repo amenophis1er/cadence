@@ -391,8 +391,14 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 				// debounce of pure added latency on a caller who has already
 				// finished. Measured on live telephony traffic, this
 				// accounted for roughly a third of all committed turns.
-				if env.IsFinal && env.SpeechFinal {
+				// Count every empty FINAL, with or without speech_final —
+				// invisibility in the session summary is how this bug
+				// hid: envelopes_received far exceeded the counted
+				// results and nothing said where they went.
+				if env.IsFinal {
 					d.resultsIsFinal.Add(1)
+				}
+				if env.IsFinal && env.SpeechFinal {
 					d.resultsSpeechFinal.Add(1)
 					flushMu.Lock()
 					flushFinalLocked(CommitSpeechFinal)
