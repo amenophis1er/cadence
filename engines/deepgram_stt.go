@@ -382,6 +382,22 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 			}
 			text := strings.TrimSpace(env.Channel.Alternatives[0].Transcript)
 			if text == "" {
+				// An EMPTY final can still carry the endpointing decision:
+				// the words were delivered in earlier segments and this
+				// envelope says only "the speaker has stopped". Discarding
+				// it — correct for an empty interim, which carries nothing —
+				// throws away the provider's own turn boundary and sends the
+				// utterance down the flush-timeout path instead: a full
+				// debounce of pure added latency on a caller who has already
+				// finished. Measured on live telephony traffic, this
+				// accounted for roughly a third of all committed turns.
+				if env.IsFinal && env.SpeechFinal {
+					d.resultsIsFinal.Add(1)
+					d.resultsSpeechFinal.Add(1)
+					flushMu.Lock()
+					flushFinalLocked(CommitSpeechFinal)
+					flushMu.Unlock()
+				}
 				continue
 			}
 			// First decoded text in this utterance → emit synthetic
