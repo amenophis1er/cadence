@@ -235,9 +235,14 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 	var flushTimer *time.Timer
 	stopped := false // protected by flushMu
 
+	// lastResultAt is when the most recent speech-bearing result arrived.
+	// It anchors STTEvent.HeldMs — how long this engine held the utterance
+	// before committing. Protected by flushMu.
+	var lastResultAt time.Time
+
 	// flushFinalLocked flushes the accumulated text and emits the final
-	// event. Caller MUST hold flushMu.
-	flushFinalLocked := func() {
+	// event, attributing WHICH rule committed it. Caller MUST hold flushMu.
+	flushFinalLocked := func(policy CommitPolicy) {
 		text := strings.TrimSpace(utterance.String())
 		utterance.Reset()
 		inUtterance = false
@@ -246,20 +251,31 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 			flushTimer = nil
 		}
 		if text != "" {
-			emitSTT(events, STTEvent{Type: STTTranscriptFinal, Text: text})
+			var heldMs int64
+			if !lastResultAt.IsZero() {
+				heldMs = time.Since(lastResultAt).Milliseconds()
+			}
+			emitSTT(events, STTEvent{
+				Type:        STTTranscriptFinal,
+				Text:        text,
+				CommittedBy: policy,
+				HeldMs:      heldMs,
+			})
 			d.finalsEmitted.Add(1)
+			OnSTTCommit(d.Name(), policy, heldMs)
 		}
+		lastResultAt = time.Time{}
 	}
 
 	// flushFinal is the public-from-this-goroutine entry point and the
 	// timer callback. Self-locking; safe from the timer goroutine.
-	flushFinal := func() {
+	flushFinal := func(policy CommitPolicy) {
 		flushMu.Lock()
 		defer flushMu.Unlock()
 		if stopped {
 			return
 		}
-		flushFinalLocked()
+		flushFinalLocked(policy)
 	}
 
 	// armFlushTimer (re)arms the debounce timer. MUST be called with
@@ -268,7 +284,7 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 		if flushTimer != nil {
 			flushTimer.Stop()
 		}
-		flushTimer = time.AfterFunc(flushTimeout, flushFinal)
+		flushTimer = time.AfterFunc(flushTimeout, func() { flushFinal(CommitFlushTimeout) })
 	}
 
 	// Defer shutdown: cancel any pending timer and gate further flushes.
@@ -290,7 +306,7 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 		if err != nil {
 			// Last-resort flush of any buffered is_final segments before
 			// we let the deferred shutdown run.
-			flushFinal()
+			flushFinal(CommitSessionEnd)
 			if !readErrorIsExpected(ctx, stopCh) {
 				emitSTT(events, STTEvent{Type: STTError, Err: err})
 			}
@@ -360,10 +376,11 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 					utterance.WriteString(" ")
 				}
 				utterance.WriteString(text)
+				lastResultAt = time.Now()
 				if env.SpeechFinal {
 					// Fast path: Deepgram says the user is done talking,
 					// commit immediately.
-					flushFinalLocked()
+					flushFinalLocked(CommitSpeechFinal)
 				} else {
 					// Slow path: arm the debounce. If another is_final
 					// arrives within flushTimeout, it'll re-arm; otherwise
