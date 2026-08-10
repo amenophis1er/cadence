@@ -2,7 +2,6 @@ package engines
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -84,14 +83,11 @@ func TestOnSTTCommitHookFires(t *testing.T) {
 		policy CommitPolicy
 		heldMs int64
 	}
-	var mu sync.Mutex
-	var got []commit
+	commits := make(chan commit, 8)
 
 	prev := OnSTTCommit
 	OnSTTCommit = func(engine string, policy CommitPolicy, heldMs int64) {
-		mu.Lock()
-		defer mu.Unlock()
-		got = append(got, commit{engine, policy, heldMs})
+		commits <- commit{engine, policy, heldMs}
 	}
 	defer func() { OnSTTCommit = prev }()
 
@@ -114,17 +110,24 @@ func TestOnSTTCommitHookFires(t *testing.T) {
 	expectSTTEvent(t, events, STTSpeechStarted, "")
 	expectSTTEvent(t, events, STTTranscriptFinal, "hello there")
 
-	// The hook fires inside the commit, which has already happened.
-	mu.Lock()
-	defer mu.Unlock()
-	if len(got) != 1 {
-		t.Fatalf("hook fired %d times, want 1", len(got))
+	// The event is emitted before the hook runs, so receiving it does not
+	// guarantee the hook has fired yet — wait on the hook's own channel.
+	var got commit
+	select {
+	case got = <-commits:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for OnSTTCommit")
 	}
-	if got[0].policy != CommitSpeechFinal {
-		t.Errorf("hook policy = %q, want %q", got[0].policy, CommitSpeechFinal)
+	if got.policy != CommitSpeechFinal {
+		t.Errorf("hook policy = %q, want %q", got.policy, CommitSpeechFinal)
 	}
-	if got[0].engine != "deepgram-stt" {
-		t.Errorf("hook engine = %q, want deepgram-stt", got[0].engine)
+	if got.engine != "deepgram-stt" {
+		t.Errorf("hook engine = %q, want deepgram-stt", got.engine)
+	}
+	select {
+	case extra := <-commits:
+		t.Errorf("hook fired again unexpectedly: %+v", extra)
+	default:
 	}
 }
 

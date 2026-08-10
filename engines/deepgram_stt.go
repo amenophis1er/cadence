@@ -242,9 +242,20 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 	// flushMu.
 	var lastResultAt time.Time
 
+	// flushGen invalidates stale debounce callbacks. timer.Stop() cannot
+	// cancel a callback that has already fired and is waiting on flushMu —
+	// without this, such a callback would flush a freshly re-armed
+	// utterance the moment the reader releases the lock (an early commit,
+	// mislabeled CommitFlushTimeout with HeldMs≈0). Every re-arm and every
+	// commit bumps the generation; a callback that wakes up to a different
+	// generation than it was armed with returns without flushing.
+	// Protected by flushMu.
+	var flushGen uint64
+
 	// flushFinalLocked flushes the accumulated text and emits the final
 	// event, attributing WHICH rule committed it. Caller MUST hold flushMu.
 	flushFinalLocked := func(policy CommitPolicy) {
+		flushGen++
 		text := strings.TrimSpace(utterance.String())
 		utterance.Reset()
 		inUtterance = false
@@ -269,8 +280,8 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 		lastResultAt = time.Time{}
 	}
 
-	// flushFinal is the public-from-this-goroutine entry point and the
-	// timer callback. Self-locking; safe from the timer goroutine.
+	// flushFinal is the self-locking entry point for the session-end path
+	// (the debounce timer has its own generation-checked callback above).
 	flushFinal := func(policy CommitPolicy) {
 		flushMu.Lock()
 		defer flushMu.Unlock()
@@ -286,7 +297,16 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 		if flushTimer != nil {
 			flushTimer.Stop()
 		}
-		flushTimer = time.AfterFunc(flushTimeout, func() { flushFinal(CommitFlushTimeout) })
+		flushGen++
+		gen := flushGen
+		flushTimer = time.AfterFunc(flushTimeout, func() {
+			flushMu.Lock()
+			defer flushMu.Unlock()
+			if stopped || gen != flushGen {
+				return
+			}
+			flushFinalLocked(CommitFlushTimeout)
+		})
 	}
 
 	// Defer shutdown: cancel any pending timer and gate further flushes.
