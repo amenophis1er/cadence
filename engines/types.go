@@ -262,6 +262,15 @@ type StreamingTTSEngine interface {
 //     in-flight boundary.
 //   - The session stays open. Text pushed to textCh after Clear is spoken
 //     normally on the same connection.
+//   - Symmetrically to the audioCh caveat: text chunks already sitting in
+//     textCh's buffer when Clear lands are indistinguishable from post-Clear
+//     text and WILL be spoken (the channel is caller-owned; only the producer
+//     knows which chunks belong to the abandoned turn). A barge-in consumer
+//     must stop its own text production for the interrupted response — in
+//     practice, cancel the LLM turn feeding textCh — as it calls Clear. The
+//     engine's guarantee covers text it has already taken OUT of textCh: a
+//     chunk dequeued before the interruption (e.g. held across the lazy
+//     connect's dial) is dropped, not spoken.
 type InterruptibleTTSEngine interface {
 	StreamingTTSEngine
 

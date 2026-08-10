@@ -123,6 +123,10 @@ if it, ok := tts.(engines.InterruptibleTTSEngine); ok {
 }
 ```
 
+Alongside `Clear`, stop feeding textCh from the interrupted response (cancel
+the LLM turn): chunks already buffered in textCh are caller-owned and will
+still be spoken — see the `InterruptibleTTSEngine` contract.
+
 ### Streaming LLM, sentence-aligned for TTS
 
 `RunSentenceBuffer` sits between the LLM's token stream and TTS, flushing on
