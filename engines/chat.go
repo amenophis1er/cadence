@@ -53,10 +53,37 @@ func (c *chatEngine) Usage() Usage {
 	return Usage{TokensIn: c.tokensIn, TokensOut: c.tokensOut, CachedTokens: c.cachedIn}
 }
 
+// emitTerminalDone is the failure-path counterpart of the "done" event
+// the SSE parsers emit on success: every Stream ends with a terminal
+// "done" event even when the request fails or the context is cancelled,
+// so consumers ranging over the events channel can key teardown off a
+// single event type. FinishReason is "cancelled" when ctx was cancelled,
+// "error" otherwise. The send is non-blocking — if the consumer has
+// stopped draining (typical after cancelling), the event is dropped
+// rather than deadlocking Stream; the error return remains authoritative.
+func emitTerminalDone(ctx context.Context, out chan<- LLMEvent) {
+	reason := "error"
+	if ctx.Err() != nil {
+		reason = "cancelled"
+	}
+	select {
+	case out <- LLMEvent{Type: "done", FinishReason: reason}:
+	default:
+	}
+}
+
 // Stream sends one chat completion request and emits LLMEvents as the response
-// streams in. Closes `out` on completion (success or error).
+// streams in. Closes `out` on completion (success or error); a terminal
+// "done" event is always emitted first (see emitTerminalDone for the
+// failure-path semantics).
 func (c *chatEngine) Stream(ctx context.Context, messages []LLMMessage, toolDefs []ToolDef, out chan<- LLMEvent) error {
-	defer close(out)
+	streamOK := false
+	defer func() {
+		if !streamOK {
+			emitTerminalDone(ctx, out)
+		}
+		close(out)
+	}()
 
 	body := buildChatRequest(c.cfg, messages, toolDefs)
 	raw, err := json.Marshal(body)
@@ -86,6 +113,7 @@ func (c *chatEngine) Stream(ctx context.Context, messages []LLMMessage, toolDefs
 	}
 
 	usage, err := parseSSE(ctx, resp.Body, out)
+	streamOK = err == nil // parser emitted its own "done"
 	if usage.TokensIn != 0 || usage.TokensOut != 0 {
 		c.usageMu.Lock()
 		c.tokensIn += usage.TokensIn

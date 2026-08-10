@@ -232,7 +232,7 @@ func TestAnthropicStream_ContextCancel(t *testing.T) {
 }
 
 // TestAnthropicStream_HTTPError: a 500 with Anthropic's JSON error body
-// must surface as a descriptive error with no events emitted.
+// must surface as a descriptive error plus a terminal done/error event.
 func TestAnthropicStream_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -249,9 +249,7 @@ func TestAnthropicStream_HTTPError(t *testing.T) {
 	if !strings.Contains(err.Error(), "500") || !strings.Contains(err.Error(), "overloaded") {
 		t.Errorf("error = %v, want status + body", err)
 	}
-	if len(events) != 0 {
-		t.Errorf("events = %+v, want none on HTTP error", events)
-	}
+	expectTerminalDone(t, events, "error")
 }
 
 // TestAnthropicStream_MalformedDataLine: a garbage data line is skipped
