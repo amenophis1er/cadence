@@ -254,9 +254,12 @@ type StreamingTTSEngine interface {
 //     Stream, and only while a Stream is live; before or after, it is a no-op
 //     returning nil.
 //   - Audio the vendor had already queued is discarded by the ENGINE, not the
-//     consumer: after Clear returns, audioCh yields no further chunks from
-//     before the interruption. Consumers never have to reason about the
-//     vendor's in-flight boundary.
+//     consumer: after Clear returns, no further pre-interruption chunks are
+//     FORWARDED to audioCh. Chunks the engine had already delivered before
+//     Clear may still sit in audioCh's buffer (the channel is caller-owned) —
+//     a consumer doing barge-in should drop what it has already dequeued or
+//     buffered for playback, but never has to reason about the vendor's
+//     in-flight boundary.
 //   - The session stays open. Text pushed to textCh after Clear is spoken
 //     normally on the same connection.
 type InterruptibleTTSEngine interface {

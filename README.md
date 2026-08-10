@@ -103,11 +103,18 @@ go tts.Stream(ctx, textCh, audioCh) // one warm connection for the whole call
 
 textCh <- engines.TextChunk{Text: "Hello! How can I help?", IsSentenceEnd: true}
 // … keep sending sentences as the LLM produces them; close(textCh) when done.
-// Cancel ctx to barge-in: the engine drains and exits.
 
 for chunk := range audioCh {
     playToCaller(chunk.Data)
 }
+
+// Barge-in: engines implementing InterruptibleTTSEngine (Deepgram WS today)
+// can abandon queued speech and keep the connection warm — no teardown, no
+// re-handshake before the agent speaks again:
+if it, ok := tts.(engines.InterruptibleTTSEngine); ok {
+    it.Clear() // drop queued audio; the session stays usable
+}
+// Engines without it fall back to cancelling ctx, which ends the session.
 ```
 
 ### Streaming LLM, sentence-aligned for TTS

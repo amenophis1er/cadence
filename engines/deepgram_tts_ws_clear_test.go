@@ -3,6 +3,7 @@ package engines
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -121,6 +122,70 @@ func TestDeepgramTTSWS_ClearDropsStaleAudioAndKeepsSession(t *testing.T) {
 		case <-deadline:
 			t.Fatal("post-Clear audio never arrived")
 		}
+	}
+}
+
+// A Clear racing session teardown must never produce two concurrent
+// websocket writers: the sender's Close sentinel and Clear's control
+// message share connMu, and gorilla panics (not errors) on concurrent
+// writes. Repeats the race enough times to make an unguarded write fail
+// reliably under -race.
+func TestDeepgramTTSWS_ClearRacesTeardown(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		wsURL, cleanup := mockDeepgramTTSServer(t, "", func(t *testing.T, ws *websocket.Conn) {
+			for {
+				_, data, err := ws.ReadMessage()
+				if err != nil {
+					return
+				}
+				var env struct {
+					Type string `json:"type"`
+				}
+				if json.Unmarshal(data, &env) == nil && env.Type == "Close" {
+					_ = ws.WriteMessage(websocket.CloseMessage,
+						websocket.FormatCloseMessage(websocket.CloseNormalClosure, "done"))
+					return
+				}
+			}
+		})
+
+		eng := newTestEngine(wsURL)
+		textCh := make(chan TextChunk, 1)
+		audioCh := make(chan AudioChunk, 16)
+		done := make(chan error, 1)
+		go func() { done <- eng.Stream(context.Background(), textCh, audioCh) }()
+
+		// First chunk triggers the lazy connect so a live conn exists.
+		textCh <- TextChunk{Text: "hello", IsSentenceEnd: true}
+
+		// Hammer Clear from several goroutines until the stream is fully
+		// down, so one of them overlaps the sender's Close sentinel write.
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		for g := 0; g < 4; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+						_ = eng.Clear()
+					}
+				}
+			}()
+		}
+		close(textCh)
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Stream did not return after teardown")
+		}
+		close(stop)
+		wg.Wait()
+		cleanup()
 	}
 }
 

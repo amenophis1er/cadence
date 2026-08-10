@@ -255,8 +255,12 @@ func (d *deepgramTTSWSEngine) runSender(
 		select {
 		case <-ctx.Done():
 			// Best-effort Close sentinel so Deepgram drains its buffer
-			// before we tear down the connection.
+			// before we tear down the connection. Under connMu: a Clear()
+			// racing teardown must not write concurrently (gorilla panics,
+			// it doesn't error).
+			d.connMu.Lock()
 			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"Close"}`))
+			d.connMu.Unlock()
 			return nil
 
 		case chunk, ok := <-textCh:
@@ -265,8 +269,11 @@ func (d *deepgramTTSWSEngine) runSender(
 				// Deepgram flushes any in-flight audio for the last
 				// utterance, then return. The receive side will exit
 				// when the WS closes or the server's Flushed/Metadata
-				// stream reaches its natural end.
+				// stream reaches its natural end. Under connMu — see the
+				// ctx.Done branch.
+				d.connMu.Lock()
 				_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"Close"}`))
+				d.connMu.Unlock()
 				return nil
 			}
 			if err := d.sendTextChunk(conn, chunk); err != nil {
@@ -394,13 +401,15 @@ func (d *deepgramTTSWSEngine) runReceiver(
 				WarnMsg string `json:"warn_msg,omitempty"`
 				Message string `json:"message,omitempty"`
 			}
-			if json.Unmarshal(data, &env) == nil && env.Type == "Cleared" {
+			if json.Unmarshal(data, &env) != nil {
+				continue
+			}
+			switch env.Type {
+			case "Cleared":
 				// Everything queued before the Clear has now been
 				// accounted for; resume forwarding audio.
 				d.discarding.Store(false)
-				continue
-			}
-			if json.Unmarshal(data, &env) == nil && env.Type == "Warning" {
+			case "Warning":
 				warn := env.WarnMsg
 				if warn == "" {
 					warn = env.Message
