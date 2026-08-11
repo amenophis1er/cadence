@@ -225,6 +225,17 @@ func (d *deepgramSTTEngine) Stop() error {
 // utterances mid-sentence while the transcript was visibly still growing
 // (observed via the envelope trace as ~a third of live-telephony commits).
 //
+// The hold is bounded by a third rule: MaxHoldMs (default 6s), measured
+// from the utterance's first buffered segment. A continuous partial
+// stream — background noise, crosstalk, a hot mic — must not hold a turn
+// open while the caller waits for a reply, so once the ceiling expires
+// the buffer commits under CommitMaxHold even though partials are still
+// arriving. That is a deliberate, controlled mid-utterance split: the
+// remainder of a genuinely long utterance arrives as a second turn, and
+// the policy stamp is what lets an operator tell a bounded turn from a
+// silence-committed one. The triple reads: commit on speech_final, else
+// on silence, but never wait longer than MaxHoldMs.
+//
 // Why this shape:
 //   - v0.2.24 used speech_final-only → customers repeated themselves
 //     because is_final segments stacked up unflushed: "Yes. Yes. Hello?"
