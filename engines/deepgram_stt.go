@@ -35,9 +35,14 @@ type DeepgramSTTConfig struct {
 	// commit Results.is_final + speech_final=true. Default 300 if zero.
 	EndpointingMs int
 	// FlushTimeoutMs is the debounce window (ms) the reader waits after the
-	// most recent is_final before flushing buffered text as a synthetic
-	// final, when speech_final never fires. Default 1200 if zero. See the
-	// runReader doc comment for the full rationale and version history.
+	// most recent Results activity — an is_final OR a non-empty partial —
+	// before flushing buffered text as a synthetic final, when speech_final
+	// never fires. Partials hold the debounce off because they prove the
+	// speaker is still talking; the window therefore measures silence, and
+	// a continuous partial stream (background noise, crosstalk) can hold a
+	// buffered utterance past this timeout until speech_final arrives.
+	// Default 1200 if zero. See the runReader doc comment for the full
+	// rationale and version history.
 	FlushTimeoutMs int
 	// TraceEnvelopes logs one line per Results envelope: the flags, the
 	// transcript's LENGTH (bytes after TrimSpace, not runes), and
@@ -200,8 +205,12 @@ func (d *deepgramSTTEngine) Stop() error {
 // commit signal — fast path, immediate emit. When speech_final does NOT
 // fire (Deepgram's telephony VAD is unreliable, observed in production),
 // we fall back to a debounce timer (DeepgramSTTConfig.FlushTimeoutMs,
-// default 1200 ms) — accumulated is_final text flushes if no new
-// is_final arrives within the window.
+// default 1200 ms) — accumulated is_final text flushes once the stream
+// goes quiet for the window: both a new is_final and a non-empty partial
+// re-arm it. Partials must hold it off because they prove the speaker is
+// still talking — a timer that only watched is_final committed long
+// utterances mid-sentence while the transcript was visibly still growing
+// (observed via the envelope trace as ~a third of live-telephony commits).
 //
 // Why this shape:
 //   - v0.2.24 used speech_final-only → customers repeated themselves
@@ -256,8 +265,11 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 	envSeq := 0
 	var prevEnvAt time.Time
 	// maxSegmentGap is the longest is_final inter-arrival gap within the
-	// current utterance — what a shorter flush timeout would have cut. Not
-	// the audible pause: see STTEvent.MaxSegmentGapMs. Protected by flushMu.
+	// current utterance. Historically "what a shorter flush timeout would
+	// have cut"; since partials began re-arming the debounce that reading
+	// is only an upper bound — a gap bridged by partials would have been
+	// held open at any timeout. Not the audible pause: see
+	// STTEvent.MaxSegmentGapMs. Protected by flushMu.
 	var maxSegmentGap time.Duration
 
 	// flushGen invalidates stale debounce callbacks. timer.Stop() cannot
