@@ -176,6 +176,13 @@ const (
 	// CommitSessionEnd: the stream ended (hangup, read error) with text
 	// still buffered, and the engine flushed it rather than lose it.
 	CommitSessionEnd CommitPolicy = "session_end"
+	// CommitMaxHold: partials kept holding the debounce off until the
+	// utterance hit MaxHoldMs, so the engine committed to bound the wait.
+	// A caller-facing system cannot let a turn be held indefinitely by a
+	// stream of partials it did not ask for; seeing this policy means the
+	// ceiling did its job, and seeing a lot of it means the ceiling is too
+	// low for how this population actually speaks.
+	CommitMaxHold CommitPolicy = "max_hold"
 )
 
 // STTEventType enumerates the streaming STT lifecycle.
