@@ -39,6 +39,16 @@ type DeepgramSTTConfig struct {
 	// final, when speech_final never fires. Default 1200 if zero. See the
 	// runReader doc comment for the full rationale and version history.
 	FlushTimeoutMs int
+	// TraceEnvelopes logs one line per Results envelope: the flags, the
+	// transcript's LENGTH (bytes after TrimSpace, not runes), and
+	// inter-envelope timing.
+	// Off by default — it is
+	// per-envelope volume (hundreds per call), meant for diagnosing why a
+	// provider's endpointing behaves as it does, not for steady state.
+	//
+	// It never logs transcript text. That is caller speech, and a diagnostic
+	// is not a reason to put it in a log line.
+	TraceEnvelopes bool
 }
 
 // NewDeepgramSTT builds a streaming STT engine talking to Deepgram.
@@ -241,6 +251,10 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 	// long this engine held the utterance before committing. Protected by
 	// flushMu.
 	var lastResultAt time.Time
+	// Envelope-trace state (TraceEnvelopes only): sequence number and the
+	// arrival of the previous Results envelope, for inter-arrival timing.
+	envSeq := 0
+	var prevEnvAt time.Time
 	// maxSegmentGap is the longest is_final inter-arrival gap within the
 	// current utterance — what a shorter flush timeout would have cut. Not
 	// the audible pause: see STTEvent.MaxSegmentGapMs. Protected by flushMu.
@@ -377,6 +391,35 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 			d.utteranceEndRecv.Add(1)
 
 		case "Results":
+			if d.cfg.TraceEnvelopes {
+				textLen := 0
+				if env.Channel != nil && len(env.Channel.Alternatives) > 0 {
+					textLen = len(strings.TrimSpace(env.Channel.Alternatives[0].Transcript))
+				}
+				sincePrev := int64(-1)
+				if !prevEnvAt.IsZero() {
+					sincePrev = time.Since(prevEnvAt).Milliseconds()
+				}
+				envSeq++
+				prevEnvAt = time.Now()
+				// utterance is owned by flushMu (the flush-timer callback
+				// resets it from its own goroutine). Log while holding it so
+				// the trace line is ordered atomically against timer commits
+				// — a `buffered=true` line means the flush had not fired at
+				// this envelope's arrival, full stop. Emitting under flushMu
+				// matches how commits themselves emit (flushFinalLocked).
+				flushMu.Lock()
+				slog.Info("deepgram-stt: envelope",
+					"call_sid", d.callSID,
+					"seq", envSeq,
+					"is_final", env.IsFinal,
+					"speech_final", env.SpeechFinal,
+					"text_len", textLen, // length only — never the caller's words
+					"since_prev_ms", sincePrev,
+					"buffered", utterance.Len() > 0,
+				)
+				flushMu.Unlock()
+			}
 			if env.Channel == nil || len(env.Channel.Alternatives) == 0 {
 				continue
 			}
