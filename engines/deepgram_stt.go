@@ -40,7 +40,9 @@ type DeepgramSTTConfig struct {
 	// runReader doc comment for the full rationale and version history.
 	FlushTimeoutMs int
 	// TraceEnvelopes logs one line per Results envelope: the flags, the
-	// transcript's LENGTH, and inter-envelope timing. Off by default — it is
+	// transcript's LENGTH (bytes after TrimSpace, not runes), and
+	// inter-envelope timing.
+	// Off by default — it is
 	// per-envelope volume (hundreds per call), meant for diagnosing why a
 	// provider's endpointing behaves as it does, not for steady state.
 	//
@@ -400,6 +402,13 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 				}
 				envSeq++
 				prevEnvAt = time.Now()
+				// utterance is owned by flushMu (the flush-timer callback
+				// resets it from its own goroutine). Log while holding it so
+				// the trace line is ordered atomically against timer commits
+				// — a `buffered=true` line means the flush had not fired at
+				// this envelope's arrival, full stop. Emitting under flushMu
+				// matches how commits themselves emit (flushFinalLocked).
+				flushMu.Lock()
 				slog.Info("deepgram-stt: envelope",
 					"call_sid", d.callSID,
 					"seq", envSeq,
@@ -409,6 +418,7 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 					"since_prev_ms", sincePrev,
 					"buffered", utterance.Len() > 0,
 				)
+				flushMu.Unlock()
 			}
 			if env.Channel == nil || len(env.Channel.Alternatives) == 0 {
 				continue
