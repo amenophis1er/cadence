@@ -491,6 +491,17 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 				}
 			} else {
 				d.resultsPartial.Add(1)
+				// A partial is proof the speaker is STILL TALKING, so it must
+				// hold the debounce off. Without this the timer measures
+				// "time since the last is_final" rather than silence: a long
+				// utterance that keeps producing partials but no new is_final
+				// for flushTimeout gets committed mid-sentence, and the rest
+				// of the same breath arrives as a second turn. Observed on
+				// live telephony as ~a third of all commits, and as callers
+				// having to repeat themselves after being cut in half.
+				if utterance.Len() > 0 {
+					armFlushTimer()
+				}
 				emitSTT(events, STTEvent{Type: STTTranscriptDelta, Text: text})
 			}
 			flushMu.Unlock()
