@@ -44,6 +44,16 @@ type DeepgramSTTConfig struct {
 	// Default 1200 if zero. See the runReader doc comment for the full
 	// rationale and version history.
 	FlushTimeoutMs int
+	// MaxHoldMs bounds how long ONE utterance may be held before it is
+	// committed regardless of continuing partials. Partials rightly hold the
+	// debounce off — the speaker is still talking — but with no ceiling a
+	// continuous partial stream (background noise, crosstalk, a hot mic) can
+	// hold a turn open indefinitely while the caller waits for a reply.
+	//
+	// The pair reads as: commit on silence, but never wait longer than this.
+	// Measured from the utterance's first buffered segment. Default 6000 if
+	// zero; set negative to disable the ceiling entirely.
+	MaxHoldMs int
 	// TraceEnvelopes logs one line per Results envelope: the flags, the
 	// transcript's LENGTH (bytes after TrimSpace, not runes), and
 	// inter-envelope timing.
@@ -69,6 +79,9 @@ func NewDeepgramSTT(cfg DeepgramSTTConfig) StreamingSTTEngine {
 	}
 	if cfg.FlushTimeoutMs <= 0 {
 		cfg.FlushTimeoutMs = 1200
+	}
+	if cfg.MaxHoldMs == 0 {
+		cfg.MaxHoldMs = 6000
 	}
 	return &deepgramSTTEngine{cfg: cfg}
 }
@@ -212,6 +225,17 @@ func (d *deepgramSTTEngine) Stop() error {
 // utterances mid-sentence while the transcript was visibly still growing
 // (observed via the envelope trace as ~a third of live-telephony commits).
 //
+// The hold is bounded by a third rule: MaxHoldMs (default 6s), measured
+// from the utterance's first buffered segment. A continuous partial
+// stream — background noise, crosstalk, a hot mic — must not hold a turn
+// open while the caller waits for a reply, so once the ceiling expires
+// the buffer commits under CommitMaxHold even though partials are still
+// arriving. That is a deliberate, controlled mid-utterance split: the
+// remainder of a genuinely long utterance arrives as a second turn, and
+// the policy stamp is what lets an operator tell a bounded turn from a
+// silence-committed one. The triple reads: commit on speech_final, else
+// on silence, but never wait longer than MaxHoldMs.
+//
 // Why this shape:
 //   - v0.2.24 used speech_final-only → customers repeated themselves
 //     because is_final segments stacked up unflushed: "Yes. Yes. Hello?"
@@ -271,6 +295,12 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 	// held open at any timeout. Not the audible pause: see
 	// STTEvent.MaxSegmentGapMs. Protected by flushMu.
 	var maxSegmentGap time.Duration
+	// utteranceStart is when the current utterance first buffered text. The
+	// max-hold ceiling is measured from here, not from the last re-arm —
+	// otherwise a steady partial stream resets the bound it is supposed to be
+	// bounded by, and the ceiling never applies.
+	var utteranceStart time.Time
+	maxHold := time.Duration(d.cfg.MaxHoldMs) * time.Millisecond
 
 	// flushGen invalidates stale debounce callbacks. timer.Stop() cannot
 	// cancel a callback that has already fired and is waiting on flushMu —
@@ -310,6 +340,7 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 		}
 		lastResultAt = time.Time{}
 		maxSegmentGap = 0
+		utteranceStart = time.Time{}
 	}
 
 	// flushFinal is the self-locking entry point for the session-end path
@@ -331,13 +362,34 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 		}
 		flushGen++
 		gen := flushGen
-		flushTimer = time.AfterFunc(flushTimeout, func() {
+		// Normally the window is the silence debounce. If the ceiling would
+		// expire sooner, shorten to it and commit under CommitMaxHold: the
+		// wait is bounded even while partials keep arriving, and the policy
+		// says which rule ended the turn.
+		wait, policy := flushTimeout, CommitFlushTimeout
+		if maxHold > 0 && !utteranceStart.IsZero() {
+			remaining := maxHold - time.Since(utteranceStart)
+			if remaining <= 0 {
+				// The ceiling has ALREADY expired: commit right here rather
+				// than scheduling a zero-delay timer. A scheduled callback
+				// must reacquire flushMu and check its generation — a hot
+				// partial stream re-arming faster than the callback can run
+				// would invalidate it every time and starve the very bound
+				// meant to contain that stream.
+				flushFinalLocked(CommitMaxHold)
+				return
+			}
+			if remaining < wait {
+				wait, policy = remaining, CommitMaxHold
+			}
+		}
+		flushTimer = time.AfterFunc(wait, func() {
 			flushMu.Lock()
 			defer flushMu.Unlock()
 			if stopped || gen != flushGen {
 				return
 			}
-			flushFinalLocked(CommitFlushTimeout)
+			flushFinalLocked(policy)
 		})
 	}
 
@@ -488,6 +540,9 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 							maxSegmentGap = gap
 						}
 					}
+				}
+				if utteranceStart.IsZero() {
+					utteranceStart = time.Now()
 				}
 				utterance.WriteString(text)
 				lastResultAt = time.Now()
