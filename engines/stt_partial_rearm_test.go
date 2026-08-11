@@ -123,3 +123,55 @@ func TestDeepgramSTT_PartialsBeforeAnyFinalDoNotArm(t *testing.T) {
 		t.Errorf("got %q by %q; an empty turn was flushed from a bare partial", ev.Text, ev.CommittedBy)
 	}
 }
+
+// Only a partial WITH TEXT proves the speaker is still talking. Empty
+// partials (keep-alive-shaped envelopes) must not hold the debounce off —
+// they are handled before the re-arm is ever reached, and this pins that: a
+// buffered utterance followed by nothing but empty partials still flushes.
+func TestDeepgramSTT_EmptyPartialsDoNotHoldOffTheDebounce(t *testing.T) {
+	wsURL, _, cleanup := mockSTTWSServer(t, func(ws *websocket.Conn) {
+		send := func(s string) bool { return ws.WriteMessage(websocket.TextMessage, []byte(s)) == nil }
+		if !send(`{"type":"Results","channel":{"alternatives":[{"transcript":"done talking"}]},"is_final":true,"speech_final":false}`) {
+			return
+		}
+		// Empty partials streaming steadily, each inside the flush window and
+		// continuing WELL past it: silence as far as speech is concerned, and
+		// the debounce must treat it as such. The stream outlives the assert
+		// deadline below, so a buggy re-arm (which would only flush after the
+		// stream ends) cannot sneak under it.
+		for i := 0; i < 25; i++ {
+			time.Sleep(80 * time.Millisecond)
+			if !send(`{"type":"Results","channel":{"alternatives":[{"transcript":""}]},"is_final":false}`) {
+				return
+			}
+		}
+		deepgramIgnoreAudio(ws)
+	})
+	defer cleanup()
+
+	eng := newTestDeepgramEngine(wsURL, func(cfg *DeepgramSTTConfig) {
+		cfg.FlushTimeoutMs = 150
+	})
+	events := make(chan STTEvent, 32)
+	if err := eng.Start(context.Background(), events); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer eng.Stop()
+
+	expectSTTEvent(t, events, STTSpeechStarted, "")
+	start := time.Now()
+	ev := recvSTTFinal(t, events)
+	// The commit must land while empty partials are STILL STREAMING (they
+	// run ~2s; the window is 150ms). If empty partials re-armed the timer,
+	// the flush could only fire after the stream ended — far past this
+	// deadline. Generous bound: scheduler slack, not correctness margin.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("flush took %v: empty partials held off the debounce", elapsed)
+	}
+	if ev.CommittedBy != CommitFlushTimeout {
+		t.Errorf("CommittedBy = %q, want %q: empty partials held off the debounce", ev.CommittedBy, CommitFlushTimeout)
+	}
+	if ev.Text != "done talking" {
+		t.Errorf("committed %q", ev.Text)
+	}
+}
