@@ -368,11 +368,19 @@ func (d *deepgramSTTEngine) runReader(ctx context.Context, conn *websocket.Conn,
 		// says which rule ended the turn.
 		wait, policy := flushTimeout, CommitFlushTimeout
 		if maxHold > 0 && !utteranceStart.IsZero() {
-			if remaining := maxHold - time.Since(utteranceStart); remaining < wait {
+			remaining := maxHold - time.Since(utteranceStart)
+			if remaining <= 0 {
+				// The ceiling has ALREADY expired: commit right here rather
+				// than scheduling a zero-delay timer. A scheduled callback
+				// must reacquire flushMu and check its generation — a hot
+				// partial stream re-arming faster than the callback can run
+				// would invalidate it every time and starve the very bound
+				// meant to contain that stream.
+				flushFinalLocked(CommitMaxHold)
+				return
+			}
+			if remaining < wait {
 				wait, policy = remaining, CommitMaxHold
-				if wait < 0 {
-					wait = 0
-				}
 			}
 		}
 		flushTimer = time.AfterFunc(wait, func() {

@@ -161,3 +161,50 @@ func TestDeepgramSTT_MaxHoldDisabled(t *testing.T) {
 		t.Errorf("CommittedBy = %q, want %q with the ceiling disabled", ev.CommittedBy, CommitFlushTimeout)
 	}
 }
+
+// The ceiling must hold even when partials arrive FASTER than a scheduled
+// timer callback can win flushMu: each re-arm invalidates the pending
+// callback's generation, so a hot stream could starve a zero-delay timer
+// forever. Once the ceiling has expired, the re-arm path commits
+// synchronously instead — this pins that a hot stream cannot outrun it.
+func TestDeepgramSTT_MaxHoldSurvivesAHotPartialStream(t *testing.T) {
+	wsURL, _, cleanup := mockSTTWSServer(t, func(ws *websocket.Conn) {
+		send := func(s string) bool { return ws.WriteMessage(websocket.TextMessage, []byte(s)) == nil }
+		if !send(`{"type":"Results","channel":{"alternatives":[{"transcript":"hot"}]},"is_final":true,"speech_final":false}`) {
+			return
+		}
+		// ~2ms cadence for ~2s: far faster than timer-callback scheduling,
+		// far longer than the ceiling.
+		for i := 0; i < 1000; i++ {
+			time.Sleep(2 * time.Millisecond)
+			if !send(`{"type":"Results","channel":{"alternatives":[{"transcript":"hot mic"}]},"is_final":false}`) {
+				return
+			}
+		}
+		deepgramIgnoreAudio(ws)
+	})
+	defer cleanup()
+
+	eng := newTestDeepgramEngine(wsURL, func(cfg *DeepgramSTTConfig) {
+		cfg.FlushTimeoutMs = 1000
+		cfg.MaxHoldMs = 150
+	})
+	events := make(chan STTEvent, 64)
+	if err := eng.Start(context.Background(), events); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer eng.Stop()
+
+	expectSTTEvent(t, events, STTSpeechStarted, "")
+	start := time.Now()
+	ev := recvSTTFinal(t, events)
+	if ev.CommittedBy != CommitMaxHold {
+		t.Errorf("CommittedBy = %q, want %q", ev.CommittedBy, CommitMaxHold)
+	}
+	// The stream runs ~2s; a starved ceiling could only commit after it
+	// ends. Landing well inside it proves the synchronous path bounded the
+	// turn.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("commit took %v: the hot stream starved the ceiling", elapsed)
+	}
+}
