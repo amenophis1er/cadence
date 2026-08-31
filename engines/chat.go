@@ -21,6 +21,34 @@ type ChatConfig struct {
 	Model       string  // e.g. gpt-4o-mini, llama3.1:8b
 	Temperature float64 // optional, 0 = use server default
 	Timeout     time.Duration
+
+	// MaxTokens caps the completion, emitted as max_completion_tokens
+	// (the current OpenAI-compatible spelling; the legacy "max_tokens"
+	// alias is deliberately not also sent, since servers that accept
+	// both reject requests carrying the pair). 0 omits the field
+	// entirely and leaves the length to the server's default.
+	//
+	// Interactive consumers treat this as a hard backstop rather than a
+	// hint: a prompt can ask for brevity and be ignored, and a reply
+	// that overruns its slot is a failure in its own right — truncation
+	// is the cheaper failure.
+	MaxTokens int
+
+	// HTTPClient, when non-nil, is used verbatim: Timeout and the
+	// built-in newEngineHTTPClient tuning are both ignored. Nil keeps
+	// the default client.
+	//
+	// A real-time consumer has to own its transport deadlines, because
+	// only it knows how long its turn is worth waiting for. The failure
+	// this exists for is a vendor that accepts the TCP/TLS connection
+	// and then stalls before sending response headers: no bytes arrive,
+	// nothing errors, and the request hangs for as long as the far side
+	// keeps the socket open. A context deadline turns that into a
+	// cancellation the consumer must interpret, whereas a Transport with
+	// ResponseHeaderTimeout turns it into a transport error the
+	// consumer's failover can act on immediately, on its own clock —
+	// which requires a client the consumer built.
+	HTTPClient *http.Client
 }
 
 type chatEngine struct {
@@ -37,11 +65,15 @@ type chatEngine struct {
 // minutes; cancellation is driven by the caller's context. cfg.Timeout, when
 // non-zero, is used by callers as a per-request deadline they layer on top.
 func NewOpenAICompat(cfg ChatConfig) LLMEngine {
-	// timeout=0 → no client-level deadline (SSE may run for minutes).
-	// Cancellation is driven by the caller's context.
+	client := cfg.HTTPClient
+	if client == nil {
+		// timeout=0 → no client-level deadline (SSE may run for minutes).
+		// Cancellation is driven by the caller's context.
+		client = newEngineHTTPClient(0)
+	}
 	return &chatEngine{
 		cfg:    cfg,
-		client: newEngineHTTPClient(0),
+		client: client,
 	}
 }
 
@@ -167,6 +199,9 @@ func buildChatRequest(cfg ChatConfig, messages []LLMMessage, toolDefs []ToolDef)
 	}
 	if cfg.Temperature > 0 {
 		req["temperature"] = cfg.Temperature
+	}
+	if cfg.MaxTokens > 0 {
+		req["max_completion_tokens"] = cfg.MaxTokens
 	}
 	if len(toolDefs) > 0 {
 		tools := make([]map[string]interface{}, len(toolDefs))

@@ -27,6 +27,18 @@ type AnthropicConfig struct {
 	APIKey    string // x-api-key header value
 	Model     string // e.g. claude-sonnet-4-5, claude-haiku-4-5
 	MaxTokens int    // required by Anthropic; defaults to 4096
+
+	// HTTPClient, when non-nil, is used verbatim instead of the built-in
+	// newEngineHTTPClient tuning. Nil keeps the default client.
+	//
+	// Same reasoning as ChatConfig.HTTPClient: a real-time consumer has
+	// to own its transport deadlines. A vendor that accepts the
+	// connection and then stalls before sending response headers
+	// produces no bytes and no error, so the request hangs for as long
+	// as the far side holds the socket. Only a Transport the consumer
+	// built (ResponseHeaderTimeout et al.) turns that stall into an
+	// error its failover can act on, on the consumer's clock.
+	HTTPClient *http.Client
 }
 
 type anthropicEngine struct {
@@ -50,11 +62,15 @@ func NewAnthropic(cfg AnthropicConfig) LLMEngine {
 	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = 4096
 	}
-	// timeout=0 — SSE streams may run for minutes; cancellation comes
-	// from the caller's context.
+	client := cfg.HTTPClient
+	if client == nil {
+		// timeout=0 — SSE streams may run for minutes; cancellation comes
+		// from the caller's context.
+		client = newEngineHTTPClient(0)
+	}
 	return &anthropicEngine{
 		cfg:    cfg,
-		client: newEngineHTTPClient(0),
+		client: client,
 	}
 }
 
