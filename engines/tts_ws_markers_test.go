@@ -158,8 +158,9 @@ wait:
 	}
 }
 
-// The ElevenLabs engine surfaces a pre-EOS isFinal — its per-flush boundary —
-// as a Flushed marker, after that segment's audio.
+// The ElevenLabs engine emits a Flushed marker from its settle heuristic:
+// the live API sends NO pre-EOS isFinal (verified 2026-09-15), so the mock
+// sends only audio, and the marker must arrive after the settle window.
 func TestElevenTTSWS_PerSegmentIsFinalSurfacesFlushedMarker(t *testing.T) {
 	audioB64 := base64.StdEncoding.EncodeToString([]byte{9, 9, 9, 9})
 	wsURL, cleanup := mockElevenTTSServer(t, func(t *testing.T, ws *websocket.Conn) {
@@ -180,9 +181,8 @@ func TestElevenTTSWS_PerSegmentIsFinalSurfacesFlushedMarker(t *testing.T) {
 				_ = ws.WriteMessage(websocket.CloseMessage,
 					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "done"))
 				return
-			default: // the sentence: audio, then the per-segment isFinal
+			default: // the sentence: audio only — the live API sends no per-flush ack
 				_ = ws.WriteMessage(websocket.TextMessage, []byte(`{"audio":"`+audioB64+`"}`))
-				_ = ws.WriteMessage(websocket.TextMessage, []byte(`{"isFinal":true}`))
 			}
 		}
 	})

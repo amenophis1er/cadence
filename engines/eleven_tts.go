@@ -28,6 +28,10 @@ type ElevenTTSConfig struct {
 	Model   string // e.g. eleven_flash_v2_5, eleven_multilingual_v2
 	Voice   string // voice id (alphanumeric, ~20 chars, e.g. JBFqnCBsd6RMkjVDRZzb)
 	Timeout time.Duration
+	// FlushSettleMs (WS engine only): quiet time after a flush's audio
+	// before the per-sentence Flushed marker is emitted — the live API
+	// sends no vendor boundary (see eleven_tts_ws.go). 0 = default 200.
+	FlushSettleMs int
 }
 
 // NewElevenTTS builds a TTSEngine talking to ElevenLabs's

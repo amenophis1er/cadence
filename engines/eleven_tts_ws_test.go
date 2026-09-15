@@ -124,8 +124,13 @@ func TestElevenTTSWS_HappyPath(t *testing.T) {
 	streamErr := make(chan error, 1)
 	go func() { streamErr <- eng.Stream(ctx, textCh, audioCh) }()
 
+	// Marker chunks (Flushed, from the settle forwarder) ride the same
+	// channel now; collect only Data chunks here.
 	var got [][]byte
 	for chunk := range audioCh {
+		if chunk.Flushed || chunk.Cleared {
+			continue
+		}
 		got = append(got, chunk.Data)
 	}
 
@@ -197,8 +202,13 @@ func TestElevenTTSWS_PreEOSIsFinalIgnored(t *testing.T) {
 	streamErr := make(chan error, 1)
 	go func() { streamErr <- eng.Stream(ctx, textCh, audioCh) }()
 
+	// Marker chunks (Flushed, from the settle forwarder) ride the same
+	// channel now; collect only Data chunks here.
 	var got [][]byte
 	for chunk := range audioCh {
+		if chunk.Flushed || chunk.Cleared {
+			continue
+		}
 		got = append(got, chunk.Data)
 	}
 	if err := <-streamErr; err != nil {

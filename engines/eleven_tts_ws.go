@@ -27,10 +27,15 @@ import (
 //     voice_settings + the first text chunk. Subsequent text-only
 //     messages flush each chunk immediately. End-of-input is signalled
 //     with `{"text": ""}`.
-//  3. The server sends `isFinal: true` after EVERY flushed segment, not
-//     just at session end. To distinguish a per-flush ack from a real
-//     session-close we only honour isFinal once we've sent EOS — the
-//     `eos_sent` flag pattern from the reference implementation.
+//  3. The server sends `isFinal: true` ONLY after EOS (verified against
+//     the live API 2026-09-15 — the old reference implementation's claim
+//     of a per-flush isFinal no longer holds). There is therefore no
+//     vendor-side per-sentence boundary: the Flushed marker chunks this
+//     engine emits (see AudioChunk) come from a SETTLE heuristic — audio
+//     has arrived for the current flush and the stream has gone quiet
+//     for FlushSettleMs — because that is the only honest signal
+//     available on this API. The settle delays only the marker, never
+//     the audio.
 //
 // Ported from the original Rust reference implementation.rs
 // (the canonical Phase-2 reference, 312 lines).
@@ -158,9 +163,9 @@ func (e *elevenTTSWSEngine) Stream(
 		resp.Body.Close()
 	}
 
-	// eosSent gates the isFinal-as-session-end check. ElevenLabs sends
-	// isFinal after each flushed segment, so we ignore it until we've
-	// sent the EOS sentinel ourselves.
+	// eosSent gates the isFinal-as-session-end check (isFinal only ever
+	// arrives after EOS on the current API; the gate stays as a guard
+	// against a keepalive frame that happens to carry the field).
 	var eosSent atomic.Bool
 
 	// Asymmetric cancel matching the Deepgram pattern: receiver always
@@ -171,9 +176,15 @@ func (e *elevenTTSWSEngine) Stream(
 	defer cancel()
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 
 	var sendErr, recvErr error
+
+	// The receiver writes raw audio here; the settle forwarder relays it
+	// to audioCh and owns the per-sentence Flushed markers (see the
+	// protocol note in the header: the live API gives no vendor
+	// boundary, so quiet-after-audio is the signal).
+	raw := make(chan AudioChunk, 64)
 
 	go func() {
 		defer wg.Done()
@@ -186,7 +197,13 @@ func (e *elevenTTSWSEngine) Stream(
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		recvErr = e.runReceiver(streamCtx, conn, audioCh, &eosSent)
+		defer close(raw)
+		recvErr = e.runReceiver(streamCtx, conn, raw, &eosSent)
+	}()
+
+	go func() {
+		defer wg.Done()
+		e.forwardWithSettle(streamCtx, raw, audioCh)
 	}()
 
 	wg.Wait()
@@ -349,19 +366,11 @@ func (e *elevenTTSWSEngine) runReceiver(
 			}
 		}
 
-		// Treat isFinal as session-end only AFTER we've sent EOS.
-		// Pre-EOS, isFinal is ElevenLabs' per-flush boundary — surface it
-		// as a Flushed marker so a sequencing consumer knows this
-		// segment's audio is fully delivered.
-		if env.IsFinal {
-			if eosSent.Load() {
-				return nil
-			}
-			select {
-			case audioCh <- AudioChunk{Flushed: true}:
-			case <-ctx.Done():
-				return nil
-			}
+		// Treat isFinal as session-end only AFTER we've sent EOS. The
+		// per-sentence Flushed markers come from the settle forwarder in
+		// Stream, not from here — the live API sends no pre-EOS isFinal.
+		if env.IsFinal && eosSent.Load() {
+			return nil
 		}
 	}
 }
@@ -391,4 +400,75 @@ func buildElevenTTSURL(cfg *ElevenTTSConfig) (string, error) {
 	q.Set("output_format", "pcm_24000")
 	u.RawQuery = q.Encode()
 	return u.String(), nil
+}
+
+// flushSettle is how long the audio stream must stay quiet, after at least
+// one chunk has arrived, before the forwarder declares the sentence's audio
+// delivered and emits a Flushed marker. It delays only the MARKER — audio is
+// relayed the moment it arrives — so its cost is pacing latency per
+// sentence, and its risk is a mid-sentence generation gap longer than the
+// window emitting one marker early (the audio itself still plays in order).
+func (e *elevenTTSWSEngine) flushSettle() time.Duration {
+	if e.cfg.FlushSettleMs > 0 {
+		return time.Duration(e.cfg.FlushSettleMs) * time.Millisecond
+	}
+	return 200 * time.Millisecond
+}
+
+// forwardWithSettle relays raw audio chunks to audioCh and emits a Flushed
+// marker once the stream has been quiet for flushSettle with audio pending
+// acknowledgement. On raw close (receiver done), a final pending marker is
+// emitted so a consumer waiting on the last sentence is not stranded.
+func (e *elevenTTSWSEngine) forwardWithSettle(ctx context.Context, raw <-chan AudioChunk, audioCh chan<- AudioChunk) {
+	settle := e.flushSettle()
+	timer := time.NewTimer(settle)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	pending := false
+	emit := func(c AudioChunk) bool {
+		select {
+		case audioCh <- c:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	// The loop exits when raw closes — the receiver guarantees that on its
+	// way out, and a closed-but-buffered channel still delivers its items,
+	// so no audio is dropped. ctx guards only the blocking emit: selecting
+	// ctx.Done() here as well would race the receiver's own deferred
+	// cancel() and could abandon buffered audio (caught by the happy-path
+	// tests the first time).
+	for {
+		select {
+		case c, ok := <-raw:
+			if !ok {
+				if pending {
+					emit(AudioChunk{Flushed: true})
+				}
+				return
+			}
+			if !emit(c) {
+				return
+			}
+			if len(c.Data) > 0 {
+				pending = true
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(settle)
+			}
+		case <-timer.C:
+			if pending {
+				if !emit(AudioChunk{Flushed: true}) {
+					return
+				}
+				pending = false
+			}
+		}
+	}
 }
