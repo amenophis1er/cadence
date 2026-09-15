@@ -125,8 +125,15 @@ func TestDeepgramTTSWS_HappyPath(t *testing.T) {
 	streamErr := make(chan error, 1)
 	go func() { streamErr <- eng.Stream(ctx, textCh, audioCh) }()
 
+	// Data chunks and marker chunks ride the same channel now; count
+	// them separately (see AudioChunk in types.go).
 	var got [][]byte
+	flushedMarkers := 0
 	for chunk := range audioCh {
+		if chunk.Flushed {
+			flushedMarkers++
+			continue
+		}
 		got = append(got, chunk.Data)
 	}
 
@@ -146,6 +153,9 @@ func TestDeepgramTTSWS_HappyPath(t *testing.T) {
 
 	if len(got) != 2 {
 		t.Fatalf("got %d audio chunks, want 2", len(got))
+	}
+	if flushedMarkers != 1 {
+		t.Fatalf("got %d Flushed markers, want 1", flushedMarkers)
 	}
 	if string(got[0]) != string(audioFrame1) {
 		t.Errorf("chunk 0 = %v, want %v", got[0], audioFrame1)

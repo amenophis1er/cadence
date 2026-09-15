@@ -274,14 +274,29 @@ func TestDeepgramTTSWS_ClearAbortsBlockedForward(t *testing.T) {
 	}
 
 	// Only NOW does the consumer start draining. The blocked stale frame
-	// must have been aborted; the first thing out must be post-Clear audio.
-	select {
-	case chunk := <-audioCh:
-		if string(chunk.Data) != "fresh" {
-			t.Fatalf("first drained chunk = %q, want the post-Clear frame", chunk.Data)
+	// must have been aborted; what comes out is the Cleared MARKER (the
+	// ack every draining consumer waits on) and then post-Clear audio —
+	// never the stale frame.
+	sawClearedMarker := false
+	deadline := time.After(3 * time.Second)
+drain:
+	for {
+		select {
+		case chunk := <-audioCh:
+			if chunk.Cleared {
+				sawClearedMarker = true
+				continue
+			}
+			if string(chunk.Data) != "fresh" {
+				t.Fatalf("first drained audio = %q, want the post-Clear frame", chunk.Data)
+			}
+			break drain
+		case <-deadline:
+			t.Fatal("post-Clear audio never arrived")
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("post-Clear audio never arrived")
+	}
+	if !sawClearedMarker {
+		t.Error("Cleared marker did not precede the post-Clear audio")
 	}
 	close(textCh)
 	<-done

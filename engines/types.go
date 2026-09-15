@@ -224,8 +224,19 @@ type TextChunk struct {
 // AudioChunk is one frame of synthesized audio. Format depends on the
 // engine — typically mu-law 8 kHz for telephony engines after vendor-side
 // decode, or PCM16 at SampleRate() if the engine returns raw samples.
+//
+// A chunk may instead be a MARKER: Flushed reports the vendor confirmed the
+// audio for the utterance(s) flushed so far has been fully delivered
+// (Deepgram's "Flushed" control, ElevenLabs' per-segment isFinal), and
+// Cleared reports a Clear() has been acknowledged vendor-side. Marker chunks
+// carry no Data. Consumers that only read Data keep working unchanged — a
+// consumer must skip empty Data regardless — while sequencing consumers (a
+// telephony session pacing one sentence at a time) get the boundary the
+// vendor actually reported instead of inferring it from silence.
 type AudioChunk struct {
-	Data []byte
+	Data    []byte
+	Flushed bool
+	Cleared bool
 }
 
 // StreamingTTSEngine owns a WebSocket (or other long-lived transport)

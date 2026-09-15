@@ -472,9 +472,11 @@ func (d *deepgramTTSWSEngine) runReceiver(
 
 		case websocket.TextMessage:
 			// Control messages: Flushed (per-utterance), Metadata
-			// (informational), Warning. Log Warning loudly; ignore the
-			// others — Stream returns when the server closes the WS or
-			// the text-side closes our half.
+			// (informational), Warning. Warning is logged loudly; Flushed
+			// and Cleared are surfaced as MARKER chunks (AudioChunk with
+			// Flushed/Cleared set, no Data) so a sequencing consumer gets
+			// the vendor's own boundary. Stream still returns only when
+			// the server closes the WS or the text-side closes our half.
 			var env struct {
 				Type    string `json:"type"`
 				WarnMsg string `json:"warn_msg,omitempty"`
@@ -484,6 +486,19 @@ func (d *deepgramTTSWSEngine) runReceiver(
 				continue
 			}
 			switch env.Type {
+			case "Flushed":
+				// Gated exactly like audio: a Flushed that arrives while
+				// a Clear is pending acknowledges an abandoned turn's
+				// flush, and forwarding it would tell the consumer a
+				// LIVE sentence completed.
+				if d.clearsPending.Load() > 0 {
+					continue
+				}
+				select {
+				case audioCh <- AudioChunk{Flushed: true}:
+				case <-ctx.Done():
+					return nil
+				}
 			case "Cleared":
 				// One outstanding Clear is now fully accounted for.
 				// Resume forwarding only when no OTHER Clear is still
@@ -497,6 +512,14 @@ func (d *deepgramTTSWSEngine) runReceiver(
 					if v <= 0 || d.clearsPending.CompareAndSwap(v, v-1) {
 						break
 					}
+				}
+				// The ack marker is NOT gated — it is the signal a
+				// draining consumer is waiting on to know the channel
+				// is clean again.
+				select {
+				case audioCh <- AudioChunk{Cleared: true}:
+				case <-ctx.Done():
+					return nil
 				}
 			case "Warning":
 				warn := env.WarnMsg

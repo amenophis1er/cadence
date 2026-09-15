@@ -350,9 +350,18 @@ func (e *elevenTTSWSEngine) runReceiver(
 		}
 
 		// Treat isFinal as session-end only AFTER we've sent EOS.
-		// Pre-EOS isFinal is per-flush bookkeeping we ignore.
-		if env.IsFinal && eosSent.Load() {
-			return nil
+		// Pre-EOS, isFinal is ElevenLabs' per-flush boundary — surface it
+		// as a Flushed marker so a sequencing consumer knows this
+		// segment's audio is fully delivered.
+		if env.IsFinal {
+			if eosSent.Load() {
+				return nil
+			}
+			select {
+			case audioCh <- AudioChunk{Flushed: true}:
+			case <-ctx.Done():
+				return nil
+			}
 		}
 	}
 }
